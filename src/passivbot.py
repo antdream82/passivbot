@@ -4836,11 +4836,6 @@ class Passivbot:
                     tick = tickers.get(sym)
                     if tick and tick.get("last") is not None:
                         last_prices[sym] = float(tick["last"])
-            # Feed prices into CM cache so downstream EMA/close lookups hit cache
-            if last_prices:
-                now_ms = int(utc_ms())
-                for sym, price in last_prices.items():
-                    self.cm.set_current_close(sym, price, now_ms)
         except Exception as e:
             logging.debug("bulk price fetch failed, falling back to CM: %s", e)
             last_prices = {}
@@ -4853,6 +4848,33 @@ class Passivbot:
         # Ensure effective min cost is up to date.
         if not hasattr(self, "effective_min_cost") or not self.effective_min_cost:
             await self.update_effective_min_cost()
+
+        orchestrator_mprices: dict[str, float] = {}
+        for symbol in symbols:
+            mprice = float(last_prices.get(symbol, 0.0))
+            if not math.isfinite(mprice) or mprice <= 0.0:
+                raise Exception(f"invalid market price for {symbol}: {mprice}")
+            price_step = float(self.price_steps[symbol])
+            mprice_quantized = float(round_(mprice, price_step))
+            prev_mprice = self._orchestrator_mprice_cache.get(symbol)
+            mprice_hysteresis = price_step * 2.0
+            if (
+                prev_mprice is not None
+                and math.isfinite(float(prev_mprice))
+                and abs(mprice_quantized - float(prev_mprice)) < mprice_hysteresis
+            ):
+                mprice_orch = float(prev_mprice)
+            else:
+                mprice_orch = mprice_quantized
+                self._orchestrator_mprice_cache[symbol] = mprice_orch
+            orchestrator_mprices[symbol] = mprice_orch
+
+        # Feed orchestrator-stabilized prices into CM cache before EMA load so order-book and EMA
+        # inputs are aligned in the same loop.
+        if orchestrator_mprices:
+            now_ms = int(utc_ms())
+            for sym, price in orchestrator_mprices.items():
+                self.cm.set_current_close(sym, price, now_ms)
 
         (
             m1_close_emas,
@@ -4900,28 +4922,15 @@ class Passivbot:
         for symbol in symbols:
             idx = symbol_to_idx[symbol]
             mprice = float(last_prices.get(symbol, 0.0))
-            if not math.isfinite(mprice) or mprice <= 0.0:
-                raise Exception(f"invalid market price for {symbol}: {mprice}")
             price_step = float(self.price_steps[symbol])
-            mprice_quantized = float(round_(mprice, price_step))
-            prev_mprice = self._orchestrator_mprice_cache.get(symbol)
-            mprice_hysteresis = price_step * 2.0
-            if (
-                prev_mprice is not None
-                and math.isfinite(float(prev_mprice))
-                and abs(mprice_quantized - float(prev_mprice)) < mprice_hysteresis
-            ):
-                mprice_orch = float(prev_mprice)
-            else:
-                mprice_orch = mprice_quantized
-                self._orchestrator_mprice_cache[symbol] = mprice_orch
+            mprice_orch = float(orchestrator_mprices[symbol])
 
             active = bool(self.markets_dict.get(symbol, {}).get("active", True))
             effective_min_cost = float(self.effective_min_cost.get(symbol, 0.0) or 0.0)
             if effective_min_cost <= 0.0:
                 effective_min_cost = float(
                     max(
-                        pbr.qty_to_cost(self.min_qtys[symbol], mprice, self.c_mults[symbol]),
+                        pbr.qty_to_cost(self.min_qtys[symbol], mprice_orch, self.c_mults[symbol]),
                         self.min_costs[symbol],
                     )
                 )
@@ -4983,39 +4992,6 @@ class Passivbot:
                 }
             )
 
-        try:
-            logging.info(
-                "[diag][orch_balance] bal_snap=%s bal_raw=%s symbols=%s",
-                input_dict.get("balance"),
-                input_dict.get("balance_raw"),
-                len(input_dict.get("symbols", [])),
-            )
-        except Exception:
-            pass
-        try:
-            for sym_input in input_dict.get("symbols", []):
-                sym = idx_to_symbol.get(int(sym_input.get("symbol_idx", -1)))
-                if sym != diag_symbol:
-                    continue
-                long_pos = sym_input.get("long", {}).get("position", {})
-                short_pos = sym_input.get("short", {}).get("position", {})
-                exchange = sym_input.get("exchange", {})
-                order_book = sym_input.get("order_book", {})
-                logging.info(
-                    "[diag][orch_symbol] %s bid=%s ask=%s qty_step=%s price_step=%s "
-                    "long_size=%s long_price=%s short_size=%s short_price=%s",
-                    sym,
-                    order_book.get("bid"),
-                    order_book.get("ask"),
-                    exchange.get("qty_step"),
-                    exchange.get("price_step"),
-                    long_pos.get("size"),
-                    long_pos.get("price"),
-                    short_pos.get("size"),
-                    short_pos.get("price"),
-                )
-        except Exception:
-            pass
 
         try:
             out_json = pbr.compute_ideal_orders_json(json.dumps(input_dict))
@@ -5032,21 +5008,6 @@ class Passivbot:
         out = json.loads(out_json)
         self._log_realized_loss_gate_blocks(out, idx_to_symbol)
         orders = out.get("orders", [])
-        try:
-            for o in orders:
-                sym = idx_to_symbol.get(int(o.get("symbol_idx", -1)))
-                if sym != diag_symbol:
-                    continue
-                logging.info(
-                    "[diag][orch_out] %s type=%s qty=%s price=%s",
-                    sym,
-                    o.get("order_type"),
-                    o.get("qty"),
-                    o.get("price"),
-                )
-        except Exception:
-            pass
-
         ideal_orders: dict[str, list] = {}
         for o in orders:
             symbol = idx_to_symbol.get(int(o["symbol_idx"]))
