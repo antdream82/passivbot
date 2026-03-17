@@ -2145,6 +2145,18 @@ class Passivbot:
         grouped_orders: dict[str, list[dict]] = defaultdict(list)
         for order in orders:
             self.add_to_recent_order_cancellations(order)
+            logging.info(
+                "[diag][cancel_try] %s id=%s side=%s pos_side=%s qty=%s price=%s ro=%s cid=%s reason=%s",
+                order.get("symbol", "?"),
+                order.get("id", "?"),
+                order.get("side", "?"),
+                order.get("position_side", "?"),
+                order.get("qty", "?"),
+                order.get("price", "?"),
+                order.get("reduce_only", order.get("reduceOnly", "?")),
+                order.get("custom_id", order.get("clientOrderId", "?")),
+                order.get("_reason", order.get("reason", "?")),
+            )
             self.log_order_action(
                 order,
                 "cancelling order",
@@ -5429,37 +5441,83 @@ class Passivbot:
                 return 0.0 if a == 0 else float("inf")
             return abs(a - b) / abs(b) * 100.0
 
-        diag_symbol = "XYZ-XYZ100/USDC:USDC"
-        for order in to_create:
+        def _order_snapshot(order: dict) -> str:
+            return (
+                f"(side={order.get('side', '?')}, pos={order.get('position_side', '?')}, "
+                f"qty={order.get('qty', '?')}, price={order.get('price', '?')}, "
+                f"cid={order.get('custom_id', order.get('clientOrderId', '?'))}, "
+                f"ro={order.get('reduce_only', order.get('reduceOnly', '?'))})"
+            )
+
+        symbols = {
+            o.get("symbol", "?") for o in to_create + to_cancel if isinstance(o, dict)
+        } or {"?"}
+        for symbol in sorted(symbols):
+            new_orders = [o for o in to_create if o.get("symbol", "?") == symbol]
+            old_orders = [o for o in to_cancel if o.get("symbol", "?") == symbol]
+            sort_key = lambda o: (
+                str(o.get("side", "")),
+                str(o.get("position_side", "")),
+                float(o.get("price", 0.0)),
+                float(o.get("qty", 0.0)),
+                str(o.get("custom_id", o.get("clientOrderId", ""))),
+            )
+            logging.info(
+                "[diag][orders_new_sorted] %s [%s]",
+                symbol,
+                ", ".join(_order_snapshot(o) for o in sorted(new_orders, key=sort_key)),
+            )
+            logging.info(
+                "[diag][orders_old_sorted] %s [%s]",
+                symbol,
+                ", ".join(_order_snapshot(o) for o in sorted(old_orders, key=sort_key)),
+            )
+
+        for new_idx, order in enumerate(to_create):
             match_idx = None
             for idx, existing in enumerate(to_cancel):
                 if idx in used_cancel:
                     continue
                 try:
-                    if (
-                        order.get("symbol") == diag_symbol
-                        and existing.get("symbol") == diag_symbol
-                    ):
-                        qty_diff = pct_diff(float(order["qty"]), float(existing["qty"]))
-                        price_diff = pct_diff(float(order["price"]), float(existing["price"]))
-                        logging.info(
-                            "[diag][match_check] %s new_qty=%s old_qty=%s new_price=%s old_price=%s "
-                            "qty_diff_pct=%.8f price_diff_pct=%.8f tol_pct=%.8f",
-                            diag_symbol,
-                            order.get("qty"),
-                            existing.get("qty"),
-                            order.get("price"),
-                            existing.get("price"),
-                            qty_diff,
-                            price_diff,
-                            tolerance,
-                        )
+                    qty_diff = pct_diff(float(order["qty"]), float(existing["qty"]))
+                    price_diff = pct_diff(float(order["price"]), float(existing["price"]))
+                    logging.info(
+                        "[diag][match_check] %s new_qty=%s old_qty=%s new_price=%s old_price=%s "
+                        "qty_diff_pct=%.8f price_diff_pct=%.8f tol_pct=%.8f",
+                        order.get("symbol", existing.get("symbol", "?")),
+                        order.get("qty"),
+                        existing.get("qty"),
+                        order.get("price"),
+                        existing.get("price"),
+                        qty_diff,
+                        price_diff,
+                        tolerance,
+                    )
                     if orders_matching(
                         order,
                         existing,
                         tolerance_qty=tolerance,
                         tolerance_price=tolerance,
                     ):
+                        logging.info(
+                            "[diag][pair] %s new_idx=%s old_idx=%s new=(qty=%s price=%s side=%s pos=%s "
+                            "ro=%s cid=%s) old=(qty=%s price=%s side=%s pos=%s ro=%s cid=%s)",
+                            order.get("symbol", existing.get("symbol", "?")),
+                            new_idx,
+                            idx,
+                            order.get("qty", "?"),
+                            order.get("price", "?"),
+                            order.get("side", "?"),
+                            order.get("position_side", "?"),
+                            order.get("reduce_only", order.get("reduceOnly", "?")),
+                            order.get("custom_id", order.get("clientOrderId", "?")),
+                            existing.get("qty", "?"),
+                            existing.get("price", "?"),
+                            existing.get("side", "?"),
+                            existing.get("position_side", "?"),
+                            existing.get("reduce_only", existing.get("reduceOnly", "?")),
+                            existing.get("custom_id", existing.get("clientOrderId", "?")),
+                        )
                         match_idx = idx
                         break
                 except Exception:

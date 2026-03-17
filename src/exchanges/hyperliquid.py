@@ -505,11 +505,31 @@ class HyperliquidBot(CCXTBot):
             # Sometimes hyperliquid returns an "ok" wrapper with an embedded error; treat as non-fatal.
             if _is_already_gone(res):
                 logging.info("Order already canceled/filled on exchange; treating as success.")
+                tracked_open = any(
+                    x.get("id") == order.get("id")
+                    for x in self.open_orders.get(order.get("symbol", ""), [])
+                )
+                logging.info(
+                    "[diag][cancel_gone] %s id=%s removed_locally=%s",
+                    order.get("symbol", "?"),
+                    order.get("id", "?"),
+                    not tracked_open,
+                )
                 return {"status": "success"}
             return res
         except Exception as e:
             if _is_already_gone(e):
                 logging.info("Order already canceled/filled on exchange; treating as success.")
+                tracked_open = any(
+                    x.get("id") == order.get("id")
+                    for x in self.open_orders.get(order.get("symbol", ""), [])
+                )
+                logging.info(
+                    "[diag][cancel_gone] %s id=%s removed_locally=%s",
+                    order.get("symbol", "?"),
+                    order.get("id", "?"),
+                    not tracked_open,
+                )
                 return {"status": "success"}
             raise
 
