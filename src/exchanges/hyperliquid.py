@@ -168,6 +168,24 @@ class HyperliquidBot(CCXTBot):
             if symbol in getattr(self, "markets_dict", {}) and self._get_hl_dex_for_symbol(symbol)
         )
 
+    def _get_hl_hip3_state_dexes(self) -> list[str]:
+        """Return HIP-3 dex scopes currently relevant for state/equity queries."""
+        dexes = {
+            self._get_hl_dex_for_symbol(symbol)
+            for symbol in self._get_hl_hip3_state_symbols()
+            if self._get_hl_dex_for_symbol(symbol)
+        }
+        configured = (
+            getattr(self, "cca", None)
+            and getattr(self.cca, "options", {})
+            .get("fetchMarkets", {})
+            .get("hip3", {})
+            .get("dex", [])
+        )
+        if isinstance(configured, (list, tuple, set)):
+            dexes.update([x for x in configured if x])
+        return sorted(dexes)
+
     def _normalize_ccxt_position(self, position: dict) -> dict:
         side = position.get("side")
         contracts = float(position.get("contracts") or 0.0)
@@ -184,10 +202,12 @@ class HyperliquidBot(CCXTBot):
     async def _fetch_hip3_positions(self) -> list[dict]:
         """Fetch HIP-3 positions via dex-scoped CCXT routes."""
         positions_by_key = {}
-        for symbol in self._get_hl_hip3_state_symbols():
-            fetched = await self.cca.fetch_positions(symbols=[symbol])
+        for dex in self._get_hl_hip3_state_dexes():
+            fetched = await self.cca.fetch_positions(params={"dex": dex})
             for position in fetched:
                 normalized = self._normalize_ccxt_position(position)
+                if self._get_hl_dex_for_symbol(normalized["symbol"]) != dex:
+                    continue
                 key = (normalized["symbol"], normalized["position_side"])
                 positions_by_key[key] = normalized
         return list(positions_by_key.values())
@@ -289,6 +309,14 @@ class HyperliquidBot(CCXTBot):
 
     async def _fetch_positions_and_balance(self):
         info = await self.cca.fetch_balance()
+        equity = float(info["info"]["marginSummary"]["accountValue"])
+
+        # HIP-3 stock perps keep collateral in dex-scoped sub-accounts (e.g. dex="xyz").
+        # Sum accountValue across default + relevant HIP-3 dexes to keep equity stable.
+        for dex in self._get_hl_hip3_state_dexes():
+            dex_info = await self.cca.fetch_balance(params={"dex": dex})
+            equity += float(dex_info["info"]["marginSummary"]["accountValue"])
+
         positions = {}
         for x in info["info"]["assetPositions"]:
             size = float(x["position"]["szi"])
@@ -301,10 +329,7 @@ class HyperliquidBot(CCXTBot):
             positions[(elm["symbol"], elm["position_side"])] = elm
         for position in await self._fetch_hip3_positions():
             positions[(position["symbol"], position["position_side"])] = position
-        balance = float(info["info"]["marginSummary"]["accountValue"]) - sum(
-            [float(x["position"]["unrealizedPnl"]) for x in info["info"]["assetPositions"]]
-        )
-        return list(positions.values()), balance
+        return list(positions.values()), equity
 
     async def _get_positions_and_balance_cached(self, my_gen: int = 0):
         """Fetch positions+balance with dedup: concurrent callers share one API call.

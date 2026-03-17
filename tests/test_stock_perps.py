@@ -212,14 +212,22 @@ class TestHyperliquidBotHIP3:
         }
         bot.coin_to_symbol = lambda coin: f"{coin}/USDC:USDC"
         bot.cca = MagicMock()
-        bot.cca.fetch_balance = AsyncMock(
-            return_value={
+        async def fetch_balance(params=None):
+            if params and params.get("dex") == "xyz":
+                return {
+                    "info": {
+                        "assetPositions": [],
+                        "marginSummary": {"accountValue": "250.0"},
+                    }
+                }
+            return {
                 "info": {
                     "assetPositions": [],
                     "marginSummary": {"accountValue": "1000.0"},
                 }
             }
-        )
+
+        bot.cca.fetch_balance = AsyncMock(side_effect=fetch_balance)
         bot.cca.fetch_positions = AsyncMock(
             return_value=[
                 {
@@ -233,7 +241,7 @@ class TestHyperliquidBotHIP3:
 
         positions, balance = await bot._fetch_positions_and_balance()
 
-        assert balance == 1000.0
+        assert balance == 1250.0
         assert positions == [
             {
                 "symbol": "XYZ-XYZ100/USDC:USDC",
@@ -242,7 +250,9 @@ class TestHyperliquidBotHIP3:
                 "price": 24982.0,
             }
         ]
-        bot.cca.fetch_positions.assert_awaited_once_with(symbols=["XYZ-XYZ100/USDC:USDC"])
+        assert bot.cca.fetch_balance.await_args_list[0].kwargs == {}
+        assert bot.cca.fetch_balance.await_args_list[1].kwargs == {"params": {"dex": "xyz"}}
+        bot.cca.fetch_positions.assert_awaited_once_with(params={"dex": "xyz"})
 
     @pytest.mark.asyncio
     async def test_fetch_open_orders_queries_hip3_symbols_with_symbol_scope(self, bot_class):
@@ -339,6 +349,18 @@ class TestHyperliquidBotHIP3:
         )
 
         assert normalized["symbol"] == "XYZ-XYZ100/USDC:USDC"
+
+    def test_get_hl_hip3_state_dexes_includes_configured_fetchmarkets_dex(self, bot_class):
+        """Dex-scoped equity queries must include configured HIP-3 dexes."""
+        bot = object.__new__(bot_class)
+        bot.active_symbols = []
+        bot.open_orders = {}
+        bot.positions = {}
+        bot.markets_dict = {}
+        bot.cca = MagicMock()
+        bot.cca.options = {"fetchMarkets": {"hip3": {"dex": ["xyz"]}}}
+
+        assert bot._get_hl_hip3_state_dexes() == ["xyz"]
 
 
 class TestIsolatedMarginLeverageCapping:
