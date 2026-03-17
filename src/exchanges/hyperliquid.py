@@ -486,6 +486,26 @@ class HyperliquidBot(CCXTBot):
             {"vaultAddress": self.user_info["wallet_address"]} if self.user_info["is_vault"] else {}
         )
 
+        def _remove_local_open_order(order_: dict) -> bool:
+            symbol = order_.get("symbol")
+            order_id = order_.get("id")
+            if symbol is None or order_id is None:
+                return False
+            try:
+                bucket = self.open_orders.get(symbol)
+            except Exception:
+                return False
+            if not isinstance(bucket, list):
+                return False
+            filtered = [x for x in bucket if not (isinstance(x, dict) and x.get("id") == order_id)]
+            if len(filtered) == len(bucket):
+                return False
+            try:
+                self.open_orders[symbol] = filtered
+                return True
+            except Exception:
+                return False
+
         def _is_already_gone(payload) -> bool:
             try:
                 text = str(payload)
@@ -505,6 +525,7 @@ class HyperliquidBot(CCXTBot):
             # Sometimes hyperliquid returns an "ok" wrapper with an embedded error; treat as non-fatal.
             if _is_already_gone(res):
                 logging.info("Order already canceled/filled on exchange; treating as success.")
+                _remove_local_open_order(order)
                 tracked_open = any(
                     x.get("id") == order.get("id")
                     for x in self.open_orders.get(order.get("symbol", ""), [])
@@ -520,6 +541,7 @@ class HyperliquidBot(CCXTBot):
         except Exception as e:
             if _is_already_gone(e):
                 logging.info("Order already canceled/filled on exchange; treating as success.")
+                _remove_local_open_order(order)
                 tracked_open = any(
                     x.get("id") == order.get("id")
                     for x in self.open_orders.get(order.get("symbol", ""), [])
