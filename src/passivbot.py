@@ -4348,7 +4348,7 @@ class Passivbot:
     async def calc_ideal_orders_orchestrator_from_snapshot(
         self, snapshot: dict, *, return_snapshot: bool
     ):
-        orchestrator_balance = self.get_hysteresis_snapped_balance()
+        orchestrator_balance = float(snapshot["balance"])
         symbols = snapshot["symbols"]
         last_prices = snapshot["last_prices"]
         m1_close_emas = snapshot["m1_close_emas"]

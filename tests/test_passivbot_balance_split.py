@@ -298,7 +298,7 @@ def test_unstuck_allowance_routes_raw_balance_to_rust(monkeypatch):
     assert calls[0][0] == pytest.approx(200.0)  # raw balance
 
 
-def test_orchestrator_snapshot_payload_uses_snapped_balance_for_sizing(monkeypatch):
+def test_orchestrator_snapshot_payload_uses_snapshot_balance_for_sizing(monkeypatch):
     import passivbot as pb_mod
     import asyncio
 
@@ -342,6 +342,7 @@ def test_orchestrator_snapshot_payload_uses_snapped_balance_for_sizing(monkeypat
             return float(self.balance)
 
     snapshot = {
+        "balance": 120.0,
         "symbols": [],
         "last_prices": {},
         "m1_close_emas": {},
@@ -611,9 +612,6 @@ def test_orchestrator_live_mprice_hysteresis_uses_cached_price_within_two_ticks(
     asyncio.run(pb_mod.Passivbot.calc_ideal_orders_orchestrator(bot, return_snapshot=False))
 
     assert captured == pytest.approx([100.0, 100.0, 100.3])
-
-    assert captured["input"]["balance"] == pytest.approx(120.0)
-    assert captured["input"]["balance_raw"] == pytest.approx(120.0)
 
 
 def test_unstuck_logging_peak_stays_stable_when_profit_updates_both_balance_and_pnl():

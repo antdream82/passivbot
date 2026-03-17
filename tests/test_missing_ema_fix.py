@@ -99,6 +99,7 @@ async def test_missing_ema_raises_from_snapshot(monkeypatch):
             return float(getattr(self, "balance", 0.0) or 0.0)
 
     snapshot = {
+        "balance": 1000.0,
         "symbols": [],
         "last_prices": {},
         "m1_close_emas": {},
@@ -151,6 +152,7 @@ async def test_missing_ema_raises_from_snapshot_with_return(monkeypatch):
             return float(getattr(self, "balance", 0.0) or 0.0)
 
     snapshot = {
+        "balance": 1000.0,
         "symbols": [],
         "last_prices": {},
         "m1_close_emas": {},
