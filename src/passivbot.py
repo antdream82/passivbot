@@ -5302,10 +5302,19 @@ class Passivbot:
     def _snapshot_actual_orders(self) -> dict[str, list[dict]]:
         """Return a normalized snapshot of currently open orders keyed by symbol."""
         actual_orders: dict[str, list[dict]] = {}
+        diag_cancel_gone = getattr(self, "_diag_cancel_gone_orders", {})
         for symbol in self.active_symbols:
             symbol_orders = []
             for order in self.open_orders.get(symbol, []):
                 try:
+                    marker = diag_cancel_gone.get((order.get("symbol"), order.get("id")))
+                    if marker is not None:
+                        logging.warning(
+                            "[diag][cancel_gone_in_planning] %s id=%s age_ms=%s",
+                            order.get("symbol", symbol),
+                            order.get("id", "?"),
+                            utc_ms() - marker,
+                        )
                     symbol_orders.append(
                         {
                             "symbol": order["symbol"],

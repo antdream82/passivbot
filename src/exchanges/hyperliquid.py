@@ -277,6 +277,7 @@ class HyperliquidBot(CCXTBot):
     async def fetch_open_orders(self, symbol: str = None):
         fetched = []
         seen_ids = set()
+        id_sources = {}
         query_symbols = [symbol] if symbol is not None else self._get_hl_hip3_state_symbols()
 
         # Default route covers core perps; HIP-3 symbols need dex-scoped queries.
@@ -285,6 +286,7 @@ class HyperliquidBot(CCXTBot):
                 if order["id"] in seen_ids:
                     continue
                 seen_ids.add(order["id"])
+                id_sources[order["id"]] = f"default:{symbol or '*'}"
                 fetched.append(order)
 
         if symbol is None:
@@ -299,12 +301,26 @@ class HyperliquidBot(CCXTBot):
                 if order["id"] in seen_ids:
                     continue
                 seen_ids.add(order["id"])
+                id_sources[order["id"]] = f"hip3:{hip3_symbol}"
                 fetched.append(order)
 
+        diag_cancel_gone = getattr(self, "_diag_cancel_gone_orders", {})
         for elm in fetched:
+            source = id_sources.get(elm.get("id"), "unknown")
+            raw_symbol = elm.get("symbol")
             elm["symbol"] = self.get_symbol_id_inv(elm["symbol"])
             elm["position_side"] = self.determine_pos_side(elm)
             elm["qty"] = elm["amount"]
+            marker = diag_cancel_gone.get((elm.get("symbol"), elm.get("id")))
+            if marker is not None:
+                logging.warning(
+                    "[diag][cancel_gone_refetched] %s id=%s route=%s age_ms=%s raw_symbol=%s",
+                    elm.get("symbol", "?"),
+                    elm.get("id", "?"),
+                    source,
+                    utc_ms() - marker,
+                    raw_symbol,
+                )
         return sorted(fetched, key=lambda x: x["timestamp"])
 
     async def _fetch_positions_and_balance(self):
@@ -506,6 +522,15 @@ class HyperliquidBot(CCXTBot):
             except Exception:
                 return False
 
+        def _mark_cancel_gone(order_: dict):
+            symbol = order_.get("symbol")
+            order_id = order_.get("id")
+            if symbol is None or order_id is None:
+                return
+            if not hasattr(self, "_diag_cancel_gone_orders"):
+                self._diag_cancel_gone_orders = {}
+            self._diag_cancel_gone_orders[(symbol, order_id)] = utc_ms()
+
         def _is_already_gone(payload) -> bool:
             try:
                 text = str(payload)
@@ -525,6 +550,7 @@ class HyperliquidBot(CCXTBot):
             # Sometimes hyperliquid returns an "ok" wrapper with an embedded error; treat as non-fatal.
             if _is_already_gone(res):
                 logging.info("Order already canceled/filled on exchange; treating as success.")
+                _mark_cancel_gone(order)
                 _remove_local_open_order(order)
                 tracked_open = any(
                     x.get("id") == order.get("id")
@@ -541,6 +567,7 @@ class HyperliquidBot(CCXTBot):
         except Exception as e:
             if _is_already_gone(e):
                 logging.info("Order already canceled/filled on exchange; treating as success.")
+                _mark_cancel_gone(order)
                 _remove_local_open_order(order)
                 tracked_open = any(
                     x.get("id") == order.get("id")
