@@ -168,8 +168,9 @@ class HyperliquidBot(CCXTBot):
         contracts = float(position.get("contracts") or 0.0)
         if side == "short":
             contracts = -contracts
+        symbol = self.get_symbol_id_inv(position["symbol"])
         return {
-            "symbol": position["symbol"],
+            "symbol": symbol,
             "position_side": side,
             "size": contracts,
             "price": float(position.get("entryPrice") or 0.0),
@@ -196,6 +197,7 @@ class HyperliquidBot(CCXTBot):
                 res = await self.ccp.watch_orders()
                 _ws_consecutive_rate_limits = 0  # reset on success
                 for i in range(len(res)):
+                    res[i]["symbol"] = self.get_symbol_id_inv(res[i]["symbol"])
                     res[i]["position_side"] = self.determine_pos_side(res[i])
                     res[i]["qty"] = res[i]["amount"]
                 self.handle_order_update(res)
@@ -275,6 +277,7 @@ class HyperliquidBot(CCXTBot):
                 fetched.append(order)
 
         for elm in fetched:
+            elm["symbol"] = self.get_symbol_id_inv(elm["symbol"])
             elm["position_side"] = self.determine_pos_side(elm)
             elm["qty"] = elm["amount"]
         return sorted(fetched, key=lambda x: x["timestamp"])
@@ -285,7 +288,7 @@ class HyperliquidBot(CCXTBot):
         for x in info["info"]["assetPositions"]:
             size = float(x["position"]["szi"])
             elm = {
-                "symbol": self.coin_to_symbol(x["position"]["coin"]),
+                "symbol": self.get_symbol_id_inv(self.coin_to_symbol(x["position"]["coin"])),
                 "position_side": ("long" if size > 0.0 else "short"),
                 "size": size,
                 "price": float(x["position"]["entryPx"]),
