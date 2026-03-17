@@ -212,14 +212,22 @@ class TestHyperliquidBotHIP3:
         }
         bot.coin_to_symbol = lambda coin: f"{coin}/USDC:USDC"
         bot.cca = MagicMock()
-        bot.cca.fetch_balance = AsyncMock(
-            return_value={
+        async def fetch_balance(params=None):
+            if params and params.get("dex") == "xyz":
+                return {
+                    "info": {
+                        "assetPositions": [],
+                        "marginSummary": {"accountValue": "250.0"},
+                    }
+                }
+            return {
                 "info": {
                     "assetPositions": [],
                     "marginSummary": {"accountValue": "1000.0"},
                 }
             }
-        )
+
+        bot.cca.fetch_balance = AsyncMock(side_effect=fetch_balance)
         bot.cca.fetch_positions = AsyncMock(
             return_value=[
                 {
@@ -233,7 +241,7 @@ class TestHyperliquidBotHIP3:
 
         positions, balance = await bot._fetch_positions_and_balance()
 
-        assert balance == 1000.0
+        assert balance == 1250.0
         assert positions == [
             {
                 "symbol": "XYZ-XYZ100/USDC:USDC",
@@ -242,7 +250,9 @@ class TestHyperliquidBotHIP3:
                 "price": 24982.0,
             }
         ]
-        bot.cca.fetch_positions.assert_awaited_once_with(symbols=["XYZ-XYZ100/USDC:USDC"])
+        assert bot.cca.fetch_balance.await_args_list[0].kwargs == {}
+        assert bot.cca.fetch_balance.await_args_list[1].kwargs == {"params": {"dex": "xyz"}}
+        bot.cca.fetch_positions.assert_awaited_once_with(params={"dex": "xyz"})
 
     @pytest.mark.asyncio
     async def test_fetch_open_orders_queries_hip3_symbols_with_symbol_scope(self, bot_class):
@@ -293,6 +303,64 @@ class TestHyperliquidBotHIP3:
         assert bot.cca.fetch_open_orders.await_args_list[1].kwargs == {
             "symbol": "XYZ-XYZ100/USDC:USDC"
         }
+
+    @pytest.mark.asyncio
+    async def test_fetch_open_orders_normalizes_internal_asset_id_symbol(self, bot_class):
+        """Internal ids like @107 must never leak into bot/exchange symbol paths."""
+        bot = object.__new__(bot_class)
+        bot.HIP3_PREFIX = bot_class.HIP3_PREFIX
+        bot.HIP3_ALT_PREFIXES = bot_class.HIP3_ALT_PREFIXES
+        bot.active_symbols = []
+        bot.open_orders = {}
+        bot.positions = {}
+        bot.markets_dict = {}
+        bot.symbol_ids_inv = {"@107": "XYZ-XYZ100/USDC:USDC"}
+        bot.determine_pos_side = lambda order: "long"
+        bot.cca = MagicMock()
+        bot.cca.fetch_open_orders = AsyncMock(
+            return_value=[
+                {
+                    "id": "abc123",
+                    "symbol": "@107",
+                    "side": "buy",
+                    "amount": 0.0009,
+                    "price": 24980.0,
+                    "timestamp": 1000,
+                }
+            ]
+        )
+
+        orders = await bot.fetch_open_orders()
+
+        assert orders[0]["symbol"] == "XYZ-XYZ100/USDC:USDC"
+
+    def test_normalize_ccxt_position_normalizes_internal_asset_id_symbol(self, bot_class):
+        """dex-scoped fetch_positions may return internal ids; normalize to ccxt symbol."""
+        bot = object.__new__(bot_class)
+        bot.symbol_ids_inv = {"@107": "XYZ-XYZ100/USDC:USDC"}
+
+        normalized = bot._normalize_ccxt_position(
+            {
+                "symbol": "@107",
+                "side": "long",
+                "contracts": 0.0009,
+                "entryPrice": 24982.0,
+            }
+        )
+
+        assert normalized["symbol"] == "XYZ-XYZ100/USDC:USDC"
+
+    def test_get_hl_hip3_state_dexes_includes_configured_fetchmarkets_dex(self, bot_class):
+        """Dex-scoped equity queries must include configured HIP-3 dexes."""
+        bot = object.__new__(bot_class)
+        bot.active_symbols = []
+        bot.open_orders = {}
+        bot.positions = {}
+        bot.markets_dict = {}
+        bot.cca = MagicMock()
+        bot.cca.options = {"fetchMarkets": {"hip3": {"dex": ["xyz"]}}}
+
+        assert bot._get_hl_hip3_state_dexes() == ["xyz"]
 
 
 class TestIsolatedMarginLeverageCapping:
