@@ -83,6 +83,11 @@ class HyperliquidBot(CCXTBot):
         for symbol in self.markets_dict:
             elm = self.markets_dict[symbol]
             self.symbol_ids[symbol] = elm["id"]
+            info = elm.get("info") or {}
+            if "baseId" in info and info["baseId"] not in (None, ""):
+                base_id = str(info["baseId"])
+                self.symbol_ids_inv[base_id] = symbol
+                self.symbol_ids_inv[f"@{base_id}"] = symbol
             self.min_costs[symbol] = (
                 10.0 if elm["limits"]["cost"]["min"] is None else elm["limits"]["cost"]["min"]
             )
