@@ -4793,6 +4793,11 @@ class Passivbot:
     async def calc_ideal_orders_orchestrator(self, *, return_snapshot: bool = False):
         """Compute desired orders using Rust orchestrator (JSON API)."""
         orchestrator_balance = self.get_hysteresis_snapped_balance()
+        if not hasattr(self, "_orchestrator_mprice_cache"):
+            # Live-input stabilization only: smooth tiny loop-to-loop mprice jitter before
+            # building orchestrator order_book input. This intentionally does not change
+            # Rust strategy math; it only stabilizes the Python-side live feed into it.
+            self._orchestrator_mprice_cache = {}
         # Use the same symbol universe as legacy live path (pre-selected in execution_cycle).
         symbols = sorted(set(getattr(self, "active_symbols", []) or []))
         if not symbols:
@@ -4897,6 +4902,19 @@ class Passivbot:
             mprice = float(last_prices.get(symbol, 0.0))
             if not math.isfinite(mprice) or mprice <= 0.0:
                 raise Exception(f"invalid market price for {symbol}: {mprice}")
+            price_step = float(self.price_steps[symbol])
+            mprice_quantized = float(round_(mprice, price_step))
+            prev_mprice = self._orchestrator_mprice_cache.get(symbol)
+            mprice_hysteresis = price_step * 2.0
+            if (
+                prev_mprice is not None
+                and math.isfinite(float(prev_mprice))
+                and abs(mprice_quantized - float(prev_mprice)) < mprice_hysteresis
+            ):
+                mprice_orch = float(prev_mprice)
+            else:
+                mprice_orch = mprice_quantized
+                self._orchestrator_mprice_cache[symbol] = mprice_orch
 
             active = bool(self.markets_dict.get(symbol, {}).get("active", True))
             effective_min_cost = float(self.effective_min_cost.get(symbol, 0.0) or 0.0)
@@ -4941,10 +4959,10 @@ class Passivbot:
             input_dict["symbols"].append(
                 {
                     "symbol_idx": int(idx),
-                    "order_book": {"bid": mprice, "ask": mprice},
+                    "order_book": {"bid": mprice_orch, "ask": mprice_orch},
                     "exchange": {
                         "qty_step": float(self.qty_steps[symbol]),
-                        "price_step": float(self.price_steps[symbol]),
+                        "price_step": price_step,
                         "min_qty": float(self.min_qtys[symbol]),
                         "min_cost": float(self.min_costs[symbol]),
                         "c_mult": float(self.c_mults[symbol]),
