@@ -4348,6 +4348,7 @@ class Passivbot:
     async def calc_ideal_orders_orchestrator_from_snapshot(
         self, snapshot: dict, *, return_snapshot: bool
     ):
+        orchestrator_balance = self.get_hysteresis_snapped_balance()
         symbols = snapshot["symbols"]
         last_prices = snapshot["last_prices"]
         m1_close_emas = snapshot["m1_close_emas"]
@@ -4367,8 +4368,8 @@ class Passivbot:
         # If either is False, we block same-coin hedging in the orchestrator.
         effective_hedge_mode = self._config_hedge_mode and self.hedge_mode
         input_dict = {
-            "balance": self.get_hysteresis_snapped_balance(),
-            "balance_raw": self.get_raw_balance(),
+            "balance": orchestrator_balance,
+            "balance_raw": orchestrator_balance,
             "global": {
                 "filter_by_min_effective_cost": bool(self.live_value("filter_by_min_effective_cost")),
                 "unstuck_allowance_long": float(unstuck_allowances.get("long", 0.0)),
@@ -4791,7 +4792,7 @@ class Passivbot:
 
     async def calc_ideal_orders_orchestrator(self, *, return_snapshot: bool = False):
         """Compute desired orders using Rust orchestrator (JSON API)."""
-        diag_symbol = "XYZ-XYZ100/USDC:USDC"
+        orchestrator_balance = self.get_hysteresis_snapped_balance()
         # Use the same symbol universe as legacy live path (pre-selected in execution_cycle).
         symbols = sorted(set(getattr(self, "active_symbols", []) or []))
         if not symbols:
@@ -4871,8 +4872,8 @@ class Passivbot:
         # If either is False, we block same-coin hedging in the orchestrator.
         effective_hedge_mode = self._config_hedge_mode and self.hedge_mode
         input_dict = {
-            "balance": self.get_hysteresis_snapped_balance(),
-            "balance_raw": self.get_raw_balance(),
+            "balance": orchestrator_balance,
+            "balance_raw": orchestrator_balance,
             "global": {
                 "filter_by_min_effective_cost": bool(self.live_value("filter_by_min_effective_cost")),
                 "unstuck_allowance_long": float(unstuck_allowances.get("long", 0.0)),
