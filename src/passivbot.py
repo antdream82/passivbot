@@ -3937,6 +3937,29 @@ class Passivbot:
                 return False
             self.fetched_open_orders = res
             open_orders = res
+            diag_cancel_gone = getattr(self, "_diag_cancel_gone_orders", {})
+            if diag_cancel_gone:
+                now = utc_ms()
+                suppress_ms = getattr(self, "CANCEL_GONE_SUPPRESS_MS", 15_000)
+                min_ts = now - suppress_ms
+                self._diag_cancel_gone_orders = {
+                    key: ts for key, ts in diag_cancel_gone.items() if ts >= min_ts
+                }
+                diag_cancel_gone = self._diag_cancel_gone_orders
+                filtered_open_orders = []
+                for elm in open_orders:
+                    marker = diag_cancel_gone.get((elm.get("symbol"), str(elm.get("id"))))
+                    if marker is not None:
+                        logging.warning(
+                            "[diag][cancel_gone_suppressed_update] %s id=%s age_ms=%s ttl_ms=%s",
+                            elm.get("symbol", "?"),
+                            elm.get("id", "?"),
+                            now - marker,
+                            suppress_ms,
+                        )
+                        continue
+                    filtered_open_orders.append(elm)
+                open_orders = filtered_open_orders
             oo_ids_old = {elm["id"] for sublist in self.open_orders.values() for elm in sublist}
             oo_ids_new = {elm["id"] for elm in open_orders}
             added_orders = [oo for oo in open_orders if oo["id"] not in oo_ids_old]

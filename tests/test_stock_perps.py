@@ -400,6 +400,55 @@ class TestHyperliquidBotHIP3:
 
         assert bot._diag_cancel_gone_orders == {}
 
+
+    @pytest.mark.asyncio
+    async def test_update_open_orders_filters_recent_cancel_gone_markers_on_rebuild(self, bot_class):
+        """Cache rebuild should also suppress recently cancel-gone ids."""
+        bot = object.__new__(bot_class)
+        bot.CANCEL_GONE_SUPPRESS_MS = 15_000
+        bot.stop_signal_received = False
+        bot.open_orders = {
+            "XYZ-XYZ100/USDC:USDC": [
+                {
+                    "id": "old",
+                    "symbol": "XYZ-XYZ100/USDC:USDC",
+                    "side": "buy",
+                    "position_side": "long",
+                    "qty": 0.1,
+                    "price": 1.0,
+                }
+            ]
+        }
+        bot._diag_cancel_gone_orders = {("XYZ-XYZ100/USDC:USDC", "335406020602"): 195_000}
+        bot.fetch_open_orders = AsyncMock(
+            return_value=[
+                {
+                    "id": "335406020602",
+                    "symbol": "XYZ-XYZ100/USDC:USDC",
+                    "side": "buy",
+                    "position_side": "long",
+                    "qty": 0.0009,
+                    "price": 24980.0,
+                    "timestamp": 1000,
+                }
+            ]
+        )
+        bot.order_was_recently_cancelled = lambda order: True
+        bot.log_order_action = lambda *args, **kwargs: None
+        bot.update_positions_and_balance = AsyncMock()
+
+        import passivbot as passivbot_module
+
+        original_utc_ms = passivbot_module.utc_ms
+        passivbot_module.utc_ms = lambda: 200_000
+        try:
+            updated = await bot.update_open_orders()
+        finally:
+            passivbot_module.utc_ms = original_utc_ms
+
+        assert updated is True
+        assert bot.open_orders == {}
+
     def test_normalize_ccxt_position_normalizes_internal_asset_id_symbol(self, bot_class):
         """dex-scoped fetch_positions may return internal ids; normalize to ccxt symbol."""
         bot = object.__new__(bot_class)
