@@ -1830,6 +1830,14 @@ class Passivbot:
         """Map a coin identifier to the exchange-specific trading symbol."""
         if coin == "":
             return ""
+        if isinstance(coin, str) and coin.startswith("@"):
+            if coin in getattr(self, "symbol_ids_inv", {}):
+                return self.symbol_ids_inv[coin]
+            if verbose:
+                logging.error(
+                    "coin_to_symbol received internal asset id without reverse mapping: %s", coin
+                )
+            return coin
         if not hasattr(self, "coin_to_symbol_map"):
             self.coin_to_symbol_map = {}
         if coin in self.coin_to_symbol_map:
