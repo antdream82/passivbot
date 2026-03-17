@@ -612,6 +612,9 @@ def test_orchestrator_live_mprice_hysteresis_uses_cached_price_within_two_ticks(
 
     assert captured == pytest.approx([100.0, 100.0, 100.3])
 
+    assert captured["input"]["balance"] == pytest.approx(120.0)
+    assert captured["input"]["balance_raw"] == pytest.approx(120.0)
+
 
 def test_unstuck_logging_peak_stays_stable_when_profit_updates_both_balance_and_pnl():
     """Regression for peak drift: peak must not decay when profits increase pnl_last and balance_raw."""
