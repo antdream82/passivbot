@@ -298,9 +298,9 @@ def test_unstuck_allowance_routes_raw_balance_to_rust(monkeypatch):
     assert calls[0][0] == pytest.approx(200.0)  # raw balance
 
 
-@pytest.mark.asyncio
-async def test_orchestrator_snapshot_payload_routes_split_balances(monkeypatch):
+def test_orchestrator_snapshot_payload_uses_snapped_balance_for_sizing(monkeypatch):
     import passivbot as pb_mod
+    import asyncio
 
     class FakeBot:
         positions = {}
@@ -316,6 +316,9 @@ async def test_orchestrator_snapshot_payload_routes_split_balances(monkeypatch):
 
         def _bot_params_to_rust_dict(self, pside, symbol):
             return {}
+
+        def _pb_mode_to_orchestrator_mode(self, mode):
+            return mode
 
         def live_value(self, key):
             return False
@@ -359,10 +362,255 @@ async def test_orchestrator_snapshot_payload_routes_split_balances(monkeypatch):
 
     bot = FakeBot()
     method = pb_mod.Passivbot.calc_ideal_orders_orchestrator_from_snapshot
-    await method(bot, snapshot, return_snapshot=False)
+    asyncio.run(method(bot, snapshot, return_snapshot=False))
 
     assert captured["input"]["balance"] == pytest.approx(120.0)
-    assert captured["input"]["balance_raw"] == pytest.approx(175.0)
+    assert captured["input"]["balance_raw"] == pytest.approx(120.0)
+
+
+def test_orchestrator_live_payload_uses_snapped_balance_for_sizing(monkeypatch):
+    import passivbot as pb_mod
+    import asyncio
+
+    class FakeCM:
+        def set_current_close(self, sym, price, ts):
+            return None
+
+        async def get_last_prices(self, symbols, max_age_ms=10_000):
+            return {symbols[0]: 10.0}
+
+    class FakeBot:
+        exchange = "binance"
+        active_symbols = ["BTC/USDT:USDT"]
+        symbol_ids = {}
+        effective_min_cost = {"BTC/USDT:USDT": 1.0}
+        _config_hedge_mode = False
+        hedge_mode = False
+        PB_modes = {"long": {"BTC/USDT:USDT": "normal"}, "short": {"BTC/USDT:USDT": "manual"}}
+        positions = {
+            "BTC/USDT:USDT": {
+                "long": {"size": 0.0, "price": 0.0},
+                "short": {"size": 0.0, "price": 0.0},
+            }
+        }
+        trailing_prices = {
+            "BTC/USDT:USDT": {
+                "long": {
+                    "min_since_open": 0.0,
+                    "max_since_min": 0.0,
+                    "max_since_open": 0.0,
+                    "min_since_max": 0.0,
+                },
+                "short": {
+                    "min_since_open": 0.0,
+                    "max_since_min": 0.0,
+                    "max_since_open": 0.0,
+                    "min_since_max": 0.0,
+                },
+            }
+        }
+        markets_dict = {"BTC/USDT:USDT": {"active": True}}
+        qty_steps = {"BTC/USDT:USDT": 0.001}
+        price_steps = {"BTC/USDT:USDT": 0.1}
+        min_qtys = {"BTC/USDT:USDT": 0.001}
+        min_costs = {"BTC/USDT:USDT": 1.0}
+        c_mults = {"BTC/USDT:USDT": 1.0}
+        cm = FakeCM()
+        balance = 120.0
+        balance_raw = 175.0
+
+        async def _load_orchestrator_ema_bundle(self, symbols, modes):
+            return (
+                {symbols[0]: {10.0: 10.0}},
+                {symbols[0]: {}},
+                {symbols[0]: {}},
+                {symbols[0]: {}},
+                {symbols[0]: 0.0},
+                {symbols[0]: 0.0},
+            )
+
+        def get_hysteresis_snapped_balance(self):
+            return float(self.balance)
+
+        def get_raw_balance(self):
+            return float(self.balance_raw)
+
+        async def update_effective_min_cost(self):
+            return None
+
+        def has_open_unstuck_order(self):
+            return False
+
+        def _calc_unstuck_allowances_live(self, allow_new_unstuck=True):
+            return {"long": 0.0, "short": 0.0}
+
+        def _get_realized_pnl_cumsum_stats(self):
+            return {"max": 0.0, "last": 0.0}
+
+        def _bot_params_to_rust_dict(self, pside, symbol):
+            return {}
+
+        def _pb_mode_to_orchestrator_mode(self, mode):
+            return mode
+
+        def live_value(self, key):
+            if key == "max_realized_loss_pct":
+                return 1.0
+            if key == "filter_by_min_effective_cost":
+                return False
+            if key == "price_distance_threshold":
+                return 1.0
+            return 0.0
+
+        def _log_realized_loss_gate_blocks(self, out, idx_to_symbol):
+            return None
+
+        def _log_ema_gating(self, ideal_orders, m1_close_emas, last_prices, symbols):
+            return None
+
+        def _to_executable_orders(self, ideal_orders, last_prices):
+            return ideal_orders, []
+
+        def _finalize_reduce_only_orders(self, ideal_orders_f, last_prices):
+            return ideal_orders_f
+
+    captured = {}
+
+    def fake_compute(json_str):
+        captured["input"] = json.loads(json_str)
+        return json.dumps({"orders": [], "diagnostics": {"loss_gate_blocks": []}})
+
+    monkeypatch.setattr(pb_mod.pbr, "compute_ideal_orders_json", fake_compute)
+    bot = FakeBot()
+    asyncio.run(pb_mod.Passivbot.calc_ideal_orders_orchestrator(bot, return_snapshot=False))
+
+    assert captured["input"]["balance"] == pytest.approx(120.0)
+    assert captured["input"]["balance_raw"] == pytest.approx(120.0)
+
+
+def test_orchestrator_live_mprice_hysteresis_uses_cached_price_within_two_ticks(monkeypatch):
+    import passivbot as pb_mod
+    import asyncio
+
+    class FakeCM:
+        def __init__(self):
+            self.prices = [100.0, 100.1, 100.3]
+            self.i = 0
+
+        def set_current_close(self, sym, price, ts):
+            return None
+
+        async def get_last_prices(self, symbols, max_age_ms=10_000):
+            p = self.prices[self.i]
+            self.i = min(self.i + 1, len(self.prices) - 1)
+            return {symbols[0]: p}
+
+    class FakeBot:
+        exchange = "binance"
+        active_symbols = ["BTC/USDT:USDT"]
+        symbol_ids = {}
+        effective_min_cost = {"BTC/USDT:USDT": 1.0}
+        _config_hedge_mode = False
+        hedge_mode = False
+        PB_modes = {"long": {"BTC/USDT:USDT": "normal"}, "short": {"BTC/USDT:USDT": "manual"}}
+        positions = {
+            "BTC/USDT:USDT": {
+                "long": {"size": 0.0, "price": 0.0},
+                "short": {"size": 0.0, "price": 0.0},
+            }
+        }
+        trailing_prices = {
+            "BTC/USDT:USDT": {
+                "long": {
+                    "min_since_open": 0.0,
+                    "max_since_min": 0.0,
+                    "max_since_open": 0.0,
+                    "min_since_max": 0.0,
+                },
+                "short": {
+                    "min_since_open": 0.0,
+                    "max_since_min": 0.0,
+                    "max_since_open": 0.0,
+                    "min_since_max": 0.0,
+                },
+            }
+        }
+        markets_dict = {"BTC/USDT:USDT": {"active": True}}
+        qty_steps = {"BTC/USDT:USDT": 0.001}
+        price_steps = {"BTC/USDT:USDT": 0.1}
+        min_qtys = {"BTC/USDT:USDT": 0.001}
+        min_costs = {"BTC/USDT:USDT": 1.0}
+        c_mults = {"BTC/USDT:USDT": 1.0}
+        cm = FakeCM()
+        balance = 120.0
+        balance_raw = 175.0
+
+        async def _load_orchestrator_ema_bundle(self, symbols, modes):
+            return (
+                {symbols[0]: {10.0: 10.0}},
+                {symbols[0]: {}},
+                {symbols[0]: {}},
+                {symbols[0]: {}},
+                {symbols[0]: 0.0},
+                {symbols[0]: 0.0},
+            )
+
+        def get_hysteresis_snapped_balance(self):
+            return float(self.balance)
+
+        async def update_effective_min_cost(self):
+            return None
+
+        def has_open_unstuck_order(self):
+            return False
+
+        def _calc_unstuck_allowances_live(self, allow_new_unstuck=True):
+            return {"long": 0.0, "short": 0.0}
+
+        def _get_realized_pnl_cumsum_stats(self):
+            return {"max": 0.0, "last": 0.0}
+
+        def _bot_params_to_rust_dict(self, pside, symbol):
+            return {}
+
+        def _pb_mode_to_orchestrator_mode(self, mode):
+            return mode
+
+        def live_value(self, key):
+            if key == "max_realized_loss_pct":
+                return 1.0
+            if key == "filter_by_min_effective_cost":
+                return False
+            if key == "price_distance_threshold":
+                return 1.0
+            return 0.0
+
+        def _log_realized_loss_gate_blocks(self, out, idx_to_symbol):
+            return None
+
+        def _log_ema_gating(self, ideal_orders, m1_close_emas, last_prices, symbols):
+            return None
+
+        def _to_executable_orders(self, ideal_orders, last_prices):
+            return ideal_orders, []
+
+        def _finalize_reduce_only_orders(self, ideal_orders_f, last_prices):
+            return ideal_orders_f
+
+    captured = []
+
+    def fake_compute(json_str):
+        payload = json.loads(json_str)
+        captured.append(payload["symbols"][0]["order_book"]["bid"])
+        return json.dumps({"orders": [], "diagnostics": {"loss_gate_blocks": []}})
+
+    monkeypatch.setattr(pb_mod.pbr, "compute_ideal_orders_json", fake_compute)
+    bot = FakeBot()
+    asyncio.run(pb_mod.Passivbot.calc_ideal_orders_orchestrator(bot, return_snapshot=False))
+    asyncio.run(pb_mod.Passivbot.calc_ideal_orders_orchestrator(bot, return_snapshot=False))
+    asyncio.run(pb_mod.Passivbot.calc_ideal_orders_orchestrator(bot, return_snapshot=False))
+
+    assert captured == pytest.approx([100.0, 100.0, 100.3])
 
 
 def test_unstuck_logging_peak_stays_stable_when_profit_updates_both_balance_and_pnl():

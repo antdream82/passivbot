@@ -83,6 +83,11 @@ class HyperliquidBot(CCXTBot):
         for symbol in self.markets_dict:
             elm = self.markets_dict[symbol]
             self.symbol_ids[symbol] = elm["id"]
+            info = elm.get("info") or {}
+            if "baseId" in info and info["baseId"] not in (None, ""):
+                base_id = str(info["baseId"])
+                self.symbol_ids_inv[base_id] = symbol
+                self.symbol_ids_inv[f"@{base_id}"] = symbol
             self.min_costs[symbol] = (
                 10.0 if elm["limits"]["cost"]["min"] is None else elm["limits"]["cost"]["min"]
             )
@@ -163,13 +168,32 @@ class HyperliquidBot(CCXTBot):
             if symbol in getattr(self, "markets_dict", {}) and self._get_hl_dex_for_symbol(symbol)
         )
 
+    def _get_hl_hip3_state_dexes(self) -> list[str]:
+        """Return HIP-3 dex scopes currently relevant for state/equity queries."""
+        dexes = {
+            self._get_hl_dex_for_symbol(symbol)
+            for symbol in self._get_hl_hip3_state_symbols()
+            if self._get_hl_dex_for_symbol(symbol)
+        }
+        configured = (
+            getattr(self, "cca", None)
+            and getattr(self.cca, "options", {})
+            .get("fetchMarkets", {})
+            .get("hip3", {})
+            .get("dex", [])
+        )
+        if isinstance(configured, (list, tuple, set)):
+            dexes.update([x for x in configured if x])
+        return sorted(dexes)
+
     def _normalize_ccxt_position(self, position: dict) -> dict:
         side = position.get("side")
         contracts = float(position.get("contracts") or 0.0)
         if side == "short":
             contracts = -contracts
+        symbol = self.get_symbol_id_inv(position["symbol"])
         return {
-            "symbol": position["symbol"],
+            "symbol": symbol,
             "position_side": side,
             "size": contracts,
             "price": float(position.get("entryPrice") or 0.0),
@@ -178,10 +202,12 @@ class HyperliquidBot(CCXTBot):
     async def _fetch_hip3_positions(self) -> list[dict]:
         """Fetch HIP-3 positions via dex-scoped CCXT routes."""
         positions_by_key = {}
-        for symbol in self._get_hl_hip3_state_symbols():
-            fetched = await self.cca.fetch_positions(symbols=[symbol])
+        for dex in self._get_hl_hip3_state_dexes():
+            fetched = await self.cca.fetch_positions(params={"dex": dex})
             for position in fetched:
                 normalized = self._normalize_ccxt_position(position)
+                if self._get_hl_dex_for_symbol(normalized["symbol"]) != dex:
+                    continue
                 key = (normalized["symbol"], normalized["position_side"])
                 positions_by_key[key] = normalized
         return list(positions_by_key.values())
@@ -196,6 +222,7 @@ class HyperliquidBot(CCXTBot):
                 res = await self.ccp.watch_orders()
                 _ws_consecutive_rate_limits = 0  # reset on success
                 for i in range(len(res)):
+                    res[i]["symbol"] = self.get_symbol_id_inv(res[i]["symbol"])
                     res[i]["position_side"] = self.determine_pos_side(res[i])
                     res[i]["qty"] = res[i]["amount"]
                 self.handle_order_update(res)
@@ -275,17 +302,26 @@ class HyperliquidBot(CCXTBot):
                 fetched.append(order)
 
         for elm in fetched:
+            elm["symbol"] = self.get_symbol_id_inv(elm["symbol"])
             elm["position_side"] = self.determine_pos_side(elm)
             elm["qty"] = elm["amount"]
         return sorted(fetched, key=lambda x: x["timestamp"])
 
     async def _fetch_positions_and_balance(self):
         info = await self.cca.fetch_balance()
+        equity = float(info["info"]["marginSummary"]["accountValue"])
+
+        # HIP-3 stock perps keep collateral in dex-scoped sub-accounts (e.g. dex="xyz").
+        # Sum accountValue across default + relevant HIP-3 dexes to keep equity stable.
+        for dex in self._get_hl_hip3_state_dexes():
+            dex_info = await self.cca.fetch_balance(params={"dex": dex})
+            equity += float(dex_info["info"]["marginSummary"]["accountValue"])
+
         positions = {}
         for x in info["info"]["assetPositions"]:
             size = float(x["position"]["szi"])
             elm = {
-                "symbol": self.coin_to_symbol(x["position"]["coin"]),
+                "symbol": self.get_symbol_id_inv(self.coin_to_symbol(x["position"]["coin"])),
                 "position_side": ("long" if size > 0.0 else "short"),
                 "size": size,
                 "price": float(x["position"]["entryPx"]),
@@ -293,10 +329,7 @@ class HyperliquidBot(CCXTBot):
             positions[(elm["symbol"], elm["position_side"])] = elm
         for position in await self._fetch_hip3_positions():
             positions[(position["symbol"], position["position_side"])] = position
-        balance = float(info["info"]["marginSummary"]["accountValue"]) - sum(
-            [float(x["position"]["unrealizedPnl"]) for x in info["info"]["assetPositions"]]
-        )
-        return list(positions.values()), balance
+        return list(positions.values()), equity
 
     async def _get_positions_and_balance_cached(self, my_gen: int = 0):
         """Fetch positions+balance with dedup: concurrent callers share one API call.
