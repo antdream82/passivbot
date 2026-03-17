@@ -311,7 +311,22 @@ class HyperliquidBot(CCXTBot):
             elm["symbol"] = self.get_symbol_id_inv(elm["symbol"])
             elm["position_side"] = self.determine_pos_side(elm)
             elm["qty"] = elm["amount"]
-            marker = diag_cancel_gone.get((elm.get("symbol"), elm.get("id")))
+            marker_key = (elm.get("symbol"), elm.get("id"))
+            marker = diag_cancel_gone.get(marker_key)
+            if marker is None and diag_cancel_gone:
+                for key, ts in diag_cancel_gone.items():
+                    if key[0] != marker_key[0]:
+                        continue
+                    if str(key[1]) == str(marker_key[1]):
+                        marker = ts
+                        logging.warning(
+                            "[diag][cancel_gone_marker_type_mismatch] %s id=%s fetched_id_type=%s marker_id_type=%s",
+                            marker_key[0],
+                            marker_key[1],
+                            type(marker_key[1]).__name__,
+                            type(key[1]).__name__,
+                        )
+                        break
             if marker is not None:
                 logging.warning(
                     "[diag][cancel_gone_refetched] %s id=%s route=%s age_ms=%s raw_symbol=%s",
@@ -530,6 +545,12 @@ class HyperliquidBot(CCXTBot):
             if not hasattr(self, "_diag_cancel_gone_orders"):
                 self._diag_cancel_gone_orders = {}
             self._diag_cancel_gone_orders[(symbol, order_id)] = utc_ms()
+            logging.info(
+                "[diag][cancel_gone_marked] %s id=%s id_type=%s",
+                symbol,
+                order_id,
+                type(order_id).__name__,
+            )
 
         def _is_already_gone(payload) -> bool:
             try:
