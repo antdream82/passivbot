@@ -29,6 +29,7 @@ class HyperliquidBot(CCXTBot):
     # HIP-3 symbols use "xyz:" prefix (TradeXYZ builder)
     HIP3_PREFIX = "xyz:"
     HIP3_ALT_PREFIXES = ("XYZ-", "XYZ:")
+    CANCEL_GONE_SUPPRESS_MS = 15_000
 
     def __init__(self, config: dict):
         super().__init__(config)
@@ -279,6 +280,14 @@ class HyperliquidBot(CCXTBot):
         seen_ids = set()
         id_sources = {}
         query_symbols = [symbol] if symbol is not None else self._get_hl_hip3_state_symbols()
+        diag_cancel_gone = getattr(self, "_diag_cancel_gone_orders", {})
+        now = utc_ms()
+        if diag_cancel_gone:
+            min_ts = now - self.CANCEL_GONE_SUPPRESS_MS
+            self._diag_cancel_gone_orders = {
+                key: ts for key, ts in diag_cancel_gone.items() if ts >= min_ts
+            }
+            diag_cancel_gone = self._diag_cancel_gone_orders
 
         # Default route covers core perps; HIP-3 symbols need dex-scoped queries.
         if symbol is None or not self._get_hl_dex_for_symbol(symbol):
@@ -304,39 +313,35 @@ class HyperliquidBot(CCXTBot):
                 id_sources[order["id"]] = f"hip3:{hip3_symbol}"
                 fetched.append(order)
 
-        diag_cancel_gone = getattr(self, "_diag_cancel_gone_orders", {})
+        filtered = []
         for elm in fetched:
             source = id_sources.get(elm.get("id"), "unknown")
             raw_symbol = elm.get("symbol")
             elm["symbol"] = self.get_symbol_id_inv(elm["symbol"])
             elm["position_side"] = self.determine_pos_side(elm)
             elm["qty"] = elm["amount"]
-            marker_key = (elm.get("symbol"), elm.get("id"))
+            marker_key = (elm.get("symbol"), str(elm.get("id")))
             marker = diag_cancel_gone.get(marker_key)
-            if marker is None and diag_cancel_gone:
-                for key, ts in diag_cancel_gone.items():
-                    if key[0] != marker_key[0]:
-                        continue
-                    if str(key[1]) == str(marker_key[1]):
-                        marker = ts
-                        logging.warning(
-                            "[diag][cancel_gone_marker_type_mismatch] %s id=%s fetched_id_type=%s marker_id_type=%s",
-                            marker_key[0],
-                            marker_key[1],
-                            type(marker_key[1]).__name__,
-                            type(key[1]).__name__,
-                        )
-                        break
             if marker is not None:
+                age_ms = now - marker
                 logging.warning(
                     "[diag][cancel_gone_refetched] %s id=%s route=%s age_ms=%s raw_symbol=%s",
                     elm.get("symbol", "?"),
                     elm.get("id", "?"),
                     source,
-                    utc_ms() - marker,
+                    age_ms,
                     raw_symbol,
                 )
-        return sorted(fetched, key=lambda x: x["timestamp"])
+                logging.warning(
+                    "[diag][cancel_gone_suppressed] %s id=%s age_ms=%s ttl_ms=%s",
+                    elm.get("symbol", "?"),
+                    elm.get("id", "?"),
+                    age_ms,
+                    self.CANCEL_GONE_SUPPRESS_MS,
+                )
+                continue
+            filtered.append(elm)
+        return sorted(filtered, key=lambda x: x["timestamp"])
 
     async def _fetch_positions_and_balance(self):
         info = await self.cca.fetch_balance()
@@ -544,7 +549,7 @@ class HyperliquidBot(CCXTBot):
                 return
             if not hasattr(self, "_diag_cancel_gone_orders"):
                 self._diag_cancel_gone_orders = {}
-            self._diag_cancel_gone_orders[(symbol, order_id)] = utc_ms()
+            self._diag_cancel_gone_orders[(symbol, str(order_id))] = utc_ms()
             logging.info(
                 "[diag][cancel_gone_marked] %s id=%s id_type=%s",
                 symbol,

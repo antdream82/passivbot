@@ -334,6 +334,72 @@ class TestHyperliquidBotHIP3:
 
         assert orders[0]["symbol"] == "XYZ-XYZ100/USDC:USDC"
 
+    @pytest.mark.asyncio
+    async def test_fetch_open_orders_suppresses_recently_marked_cancel_gone_ids(self, bot_class):
+        """Recently cancel-gone ids should be suppressed when refetched by exchange lag."""
+        bot = object.__new__(bot_class)
+        bot.HIP3_PREFIX = bot_class.HIP3_PREFIX
+        bot.HIP3_ALT_PREFIXES = bot_class.HIP3_ALT_PREFIXES
+        bot.CANCEL_GONE_SUPPRESS_MS = 15_000
+        bot.active_symbols = []
+        bot.open_orders = {}
+        bot.positions = {}
+        bot.markets_dict = {}
+        bot.symbol_ids_inv = {"@107": "XYZ-XYZ100/USDC:USDC"}
+        bot.determine_pos_side = lambda order: "long"
+        bot._diag_cancel_gone_orders = {("XYZ-XYZ100/USDC:USDC", "335406020602"): 195_000}
+        bot.cca = MagicMock()
+        bot.cca.fetch_open_orders = AsyncMock(
+            return_value=[
+                {
+                    "id": "335406020602",
+                    "symbol": "@107",
+                    "side": "buy",
+                    "amount": 0.0009,
+                    "price": 24980.0,
+                    "timestamp": 1000,
+                }
+            ]
+        )
+
+        from exchanges import hyperliquid as hyperliquid_module
+
+        original_utc_ms = hyperliquid_module.utc_ms
+        hyperliquid_module.utc_ms = lambda: 200_000
+        try:
+            orders = await bot.fetch_open_orders()
+        finally:
+            hyperliquid_module.utc_ms = original_utc_ms
+
+        assert orders == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_open_orders_prunes_expired_cancel_gone_markers(self, bot_class):
+        """Cancel-gone markers older than suppression TTL should be dropped."""
+        bot = object.__new__(bot_class)
+        bot.HIP3_PREFIX = bot_class.HIP3_PREFIX
+        bot.HIP3_ALT_PREFIXES = bot_class.HIP3_ALT_PREFIXES
+        bot.CANCEL_GONE_SUPPRESS_MS = 15_000
+        bot.active_symbols = []
+        bot.open_orders = {}
+        bot.positions = {}
+        bot.markets_dict = {}
+        bot.determine_pos_side = lambda order: "long"
+        bot._diag_cancel_gone_orders = {("BTC/USDC:USDC", "1"): 100_000}
+        bot.cca = MagicMock()
+        bot.cca.fetch_open_orders = AsyncMock(return_value=[])
+
+        from exchanges import hyperliquid as hyperliquid_module
+
+        original_utc_ms = hyperliquid_module.utc_ms
+        hyperliquid_module.utc_ms = lambda: 200_000
+        try:
+            await bot.fetch_open_orders()
+        finally:
+            hyperliquid_module.utc_ms = original_utc_ms
+
+        assert bot._diag_cancel_gone_orders == {}
+
     def test_normalize_ccxt_position_normalizes_internal_asset_id_symbol(self, bot_class):
         """dex-scoped fetch_positions may return internal ids; normalize to ccxt symbol."""
         bot = object.__new__(bot_class)
