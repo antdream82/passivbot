@@ -249,6 +249,37 @@ def test_coin_to_symbol_with_explicit_quote(tmp_path, monkeypatch):
     assert sym2 == "ETH/USDT:USDT"
 
 
+def test_build_coin_symbol_maps_adds_internal_base_id_variants():
+    markets = {
+        "XYZ-XYZ100/USDC:USDC": {
+            "swap": True,
+            "linear": True,
+            "baseName": "xyz:XYZ100",
+            "base": "XYZ-XYZ100",
+            "id": "XYZ100",
+            "info": {"baseId": 107},
+        }
+    }
+
+    c2s, s2c = utils._build_coin_symbol_maps(markets, quote="USDC")
+
+    assert "@107" in c2s
+    assert c2s["@107"] == ["XYZ-XYZ100/USDC:USDC"]
+    assert s2c["@107"] == s2c["XYZ-XYZ100/USDC:USDC"]
+
+
+def test_coin_to_symbol_does_not_create_pseudo_symbol_for_internal_asset_id(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ex = "hyperliquid"
+    path = os.path.join("caches", ex, "coin_to_symbol_map.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    json.dump({}, open(path, "w"))
+
+    sym = utils.coin_to_symbol("@107", ex)
+
+    assert sym == "@107"
+
+
 def test_concurrent_write_symbol_maps(tmp_path, monkeypatch):
     """
     Multiple threads writing to symbol_to_coin_map shouldn't corrupt it.
