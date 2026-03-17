@@ -4984,6 +4984,40 @@ class Passivbot:
             )
 
         try:
+            logging.info(
+                "[diag][orch_balance] bal_snap=%s bal_raw=%s symbols=%s",
+                input_dict.get("balance"),
+                input_dict.get("balance_raw"),
+                len(input_dict.get("symbols", [])),
+            )
+        except Exception:
+            pass
+        try:
+            for sym_input in input_dict.get("symbols", []):
+                sym = idx_to_symbol.get(int(sym_input.get("symbol_idx", -1)))
+                if sym != diag_symbol:
+                    continue
+                long_pos = sym_input.get("long", {}).get("position", {})
+                short_pos = sym_input.get("short", {}).get("position", {})
+                exchange = sym_input.get("exchange", {})
+                order_book = sym_input.get("order_book", {})
+                logging.info(
+                    "[diag][orch_symbol] %s bid=%s ask=%s qty_step=%s price_step=%s "
+                    "long_size=%s long_price=%s short_size=%s short_price=%s",
+                    sym,
+                    order_book.get("bid"),
+                    order_book.get("ask"),
+                    exchange.get("qty_step"),
+                    exchange.get("price_step"),
+                    long_pos.get("size"),
+                    long_pos.get("price"),
+                    short_pos.get("size"),
+                    short_pos.get("price"),
+                )
+        except Exception:
+            pass
+
+        try:
             out_json = pbr.compute_ideal_orders_json(json.dumps(input_dict))
         except Exception as e:
             msg = str(e)
@@ -4998,6 +5032,20 @@ class Passivbot:
         out = json.loads(out_json)
         self._log_realized_loss_gate_blocks(out, idx_to_symbol)
         orders = out.get("orders", [])
+        try:
+            for o in orders:
+                sym = idx_to_symbol.get(int(o.get("symbol_idx", -1)))
+                if sym != diag_symbol:
+                    continue
+                logging.info(
+                    "[diag][orch_out] %s type=%s qty=%s price=%s",
+                    sym,
+                    o.get("order_type"),
+                    o.get("qty"),
+                    o.get("price"),
+                )
+        except Exception:
+            pass
 
         ideal_orders: dict[str, list] = {}
         for o in orders:
@@ -5420,12 +5468,31 @@ class Passivbot:
                 return 0.0 if a == 0 else float("inf")
             return abs(a - b) / abs(b) * 100.0
 
+        diag_symbol = "XYZ-XYZ100/USDC:USDC"
         for order in to_create:
             match_idx = None
             for idx, existing in enumerate(to_cancel):
                 if idx in used_cancel:
                     continue
                 try:
+                    if (
+                        order.get("symbol") == diag_symbol
+                        and existing.get("symbol") == diag_symbol
+                    ):
+                        qty_diff = pct_diff(float(order["qty"]), float(existing["qty"]))
+                        price_diff = pct_diff(float(order["price"]), float(existing["price"]))
+                        logging.info(
+                            "[diag][match_check] %s new_qty=%s old_qty=%s new_price=%s old_price=%s "
+                            "qty_diff_pct=%.8f price_diff_pct=%.8f tol_pct=%.8f",
+                            diag_symbol,
+                            order.get("qty"),
+                            existing.get("qty"),
+                            order.get("price"),
+                            existing.get("price"),
+                            qty_diff,
+                            price_diff,
+                            tolerance,
+                        )
                     if orders_matching(
                         order,
                         existing,
