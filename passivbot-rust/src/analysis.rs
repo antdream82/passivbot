@@ -296,6 +296,7 @@ fn analyze_backtest_basic(
     let daily_worst_drawdowns =
         daily_worst_signed_drawdowns(&drawdowns_full, timestamps_ms, equities.len());
     let drawdown_worst_mean_1pct = mean_worst_1pct_abs(&daily_worst_drawdowns);
+    let ulcer_index = calc_ulcer_index_from_drawdowns(&drawdowns_full);
     let drawdown_worst = if drawdowns_full.is_empty() {
         0.0
     } else {
@@ -313,6 +314,12 @@ fn analyze_backtest_basic(
     let calmar_ratio = {
         let denom = drawdown_worst.abs().max(1e-12);
         adg / denom
+    };
+    let adg_over_ui = if ulcer_index > 0.0 { adg / ulcer_index } else { 0.0 };
+    let gain_over_ui = if ulcer_index > 0.0 {
+        gain / ulcer_index
+    } else {
+        0.0
     };
 
     // Calculate equity-balance differences
@@ -623,6 +630,9 @@ fn analyze_backtest_basic(
     analysis.adg = adg;
     analysis.mdg = mdg;
     analysis.gain = gain;
+    analysis.ulcer_index = ulcer_index;
+    analysis.adg_over_ui = adg_over_ui;
+    analysis.gain_over_ui = gain_over_ui;
     analysis.adg_pnl = adg_pnl;
     analysis.mdg_pnl = mdg_pnl;
     analysis.sharpe_ratio_pnl = sharpe_ratio_pnl;
@@ -1122,6 +1132,22 @@ fn daily_worst_signed_drawdowns(
     }
     daily_worst.push(current_worst);
     daily_worst
+}
+
+fn calc_ulcer_index_from_drawdowns(drawdowns: &[f64]) -> f64 {
+    let mut sum_sq = 0.0;
+    let mut count = 0usize;
+    for &drawdown in drawdowns.iter() {
+        if drawdown.is_finite() {
+            sum_sq += drawdown.powi(2);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        (sum_sq / count as f64).sqrt()
+    }
 }
 
 /// Calculates the normalized total variation (sum of absolute first differences divided by net equity gain)

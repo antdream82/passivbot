@@ -4,6 +4,7 @@ import random
 import re
 import traceback
 from copy import deepcopy
+from pathlib import Path
 
 import ccxt.pro as ccxt_pro
 import ccxt.async_support as ccxt_async
@@ -36,6 +37,8 @@ class HyperliquidBot(CCXTBot):
     HIP3_ALT_PREFIXES = ("XYZ-", "XYZ:")
     HIP3_ISOLATED_SUPPORTED = False
     HIP3_ORDER_MARGIN_BUFFER = 1.01
+    CANCEL_GONE_SUPPRESS_MS = 60_000
+    CANCEL_GONE_MARKER_MAX_AGE_MS = 21_600_000
 
     def __init__(self, config: dict):
         super().__init__(config)
@@ -54,6 +57,74 @@ class HyperliquidBot(CCXTBot):
         self._hl_cache_generation = 0
         self._hl_user_abstraction = "unknown"
         self._hl_unified_enabled = False
+        self._load_cancel_gone_tombstones()
+
+    def _get_cancel_gone_tombstones_path(self) -> Path:
+        return Path("caches") / self.exchange / f"{self.user}_cancel_gone_tombstones.json"
+
+    def _prune_cancel_gone_tombstones(self, now_ms: int | None = None) -> dict:
+        now_ms = utc_ms() if now_ms is None else now_ms
+        min_ts = now_ms - self.CANCEL_GONE_MARKER_MAX_AGE_MS
+        current = getattr(self, "_diag_cancel_gone_orders", {}) or {}
+        pruned = {}
+        for key, ts in current.items():
+            if not isinstance(key, tuple) or len(key) != 2:
+                continue
+            symbol, order_id = key
+            try:
+                ts_i = int(ts)
+            except Exception:
+                continue
+            if symbol is None or order_id is None or ts_i < min_ts:
+                continue
+            pruned[(str(symbol), str(order_id))] = ts_i
+        self._diag_cancel_gone_orders = pruned
+        return pruned
+
+    def _load_cancel_gone_tombstones(self) -> None:
+        path = self._get_cancel_gone_tombstones_path()
+        self._diag_cancel_gone_orders = {}
+        if not path.exists():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            entries = payload.get("entries", []) if isinstance(payload, dict) else []
+            loaded = {}
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                symbol = entry.get("symbol")
+                order_id = entry.get("id")
+                ts = entry.get("ts")
+                if symbol is None or order_id is None or ts is None:
+                    continue
+                loaded[(str(symbol), str(order_id))] = int(ts)
+            self._diag_cancel_gone_orders = loaded
+            self._prune_cancel_gone_tombstones()
+        except Exception as e:
+            logging.warning("[diag][cancel_gone_restore_failed] path=%s error=%s", path, e)
+            self._diag_cancel_gone_orders = {}
+
+    def _save_cancel_gone_tombstones(self) -> None:
+        path = self._get_cancel_gone_tombstones_path()
+        try:
+            pruned = self._prune_cancel_gone_tombstones()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 1,
+                "entries": [
+                    {"symbol": symbol, "id": order_id, "ts": ts}
+                    for (symbol, order_id), ts in sorted(pruned.items())
+                ],
+            }
+            tmp_path = path.with_name(f"{path.name}.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, sort_keys=True)
+                f.flush()
+            tmp_path.replace(path)
+        except Exception as e:
+            logging.warning("[diag][cancel_gone_persist_failed] path=%s error=%s", path, e)
 
     def _hl_info_url(self) -> str:
         """Derive the Hyperliquid /info endpoint from the CCXT session URL config."""
@@ -479,6 +550,11 @@ class HyperliquidBot(CCXTBot):
 
     def _normalize_open_orders(self, fetched: list) -> list:
         filtered = []
+        diag_cancel_gone = getattr(self, "_diag_cancel_gone_orders", {})
+        now = utc_ms()
+        if diag_cancel_gone:
+            self._prune_cancel_gone_tombstones(now)
+            diag_cancel_gone = self._diag_cancel_gone_orders
         for elm in fetched:
             source = elm.pop("_pb_fetch_source", "unknown")
             raw_symbol = elm.get("symbol")
@@ -493,6 +569,18 @@ class HyperliquidBot(CCXTBot):
             elm["symbol"] = self._safe_symbol_from_exchange(elm["symbol"])
             elm["position_side"] = self.determine_pos_side(elm)
             elm["qty"] = elm["amount"]
+            marker = diag_cancel_gone.get((elm.get("symbol"), str(elm.get("id"))))
+            if marker is not None and now - marker <= self.CANCEL_GONE_SUPPRESS_MS:
+                logging.debug(
+                    "[diag][cancel_gone_suppressed] %s id=%s route=%s age_ms=%s ttl_ms=%s raw_symbol=%s",
+                    elm.get("symbol", "?"),
+                    elm.get("id", "?"),
+                    source,
+                    now - marker,
+                    self.CANCEL_GONE_SUPPRESS_MS,
+                    raw_symbol,
+                )
+                continue
             filtered.append(elm)
         return sorted(filtered, key=lambda x: x["timestamp"])
 
@@ -813,6 +901,45 @@ class HyperliquidBot(CCXTBot):
             {"vaultAddress": self.user_info["wallet_address"]} if self.user_info["is_vault"] else {}
         )
 
+        def _remove_local_open_order(order_: dict) -> bool:
+            symbol = order_.get("symbol")
+            order_id = order_.get("id")
+            if symbol is None or order_id is None:
+                return False
+            order_id = str(order_id)
+            try:
+                bucket = self.open_orders.get(symbol)
+            except Exception:
+                return False
+            if not isinstance(bucket, list):
+                return False
+            filtered = [
+                x
+                for x in bucket
+                if not (
+                    isinstance(x, dict)
+                    and x.get("id") is not None
+                    and str(x.get("id")) == order_id
+                )
+            ]
+            if len(filtered) == len(bucket):
+                return False
+            try:
+                self.open_orders[symbol] = filtered
+                return True
+            except Exception:
+                return False
+
+        def _mark_cancel_gone(order_: dict) -> None:
+            symbol = order_.get("symbol")
+            order_id = order_.get("id")
+            if symbol is None or order_id is None:
+                return
+            if not hasattr(self, "_diag_cancel_gone_orders"):
+                self._diag_cancel_gone_orders = {}
+            self._diag_cancel_gone_orders[(str(symbol), str(order_id))] = utc_ms()
+            self._save_cancel_gone_tombstones()
+
         def _is_already_gone(payload) -> bool:
             try:
                 text = str(payload)
@@ -832,11 +959,15 @@ class HyperliquidBot(CCXTBot):
             # Sometimes hyperliquid returns an "ok" wrapper with an embedded error; treat as non-fatal.
             if _is_already_gone(res):
                 logging.info("Order already canceled/filled on exchange; treating as success.")
+                _mark_cancel_gone(order)
+                _remove_local_open_order(order)
                 return {"status": "success"}
             return res
         except Exception as e:
             if _is_already_gone(e):
                 logging.info("Order already canceled/filled on exchange; treating as success.")
+                _mark_cancel_gone(order)
+                _remove_local_open_order(order)
                 return {"status": "success"}
             raise
 
