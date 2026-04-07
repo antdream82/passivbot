@@ -817,6 +817,12 @@ def _build_coin_symbol_maps(markets, quote):
                 coin_to_symbol_map[variant].add(k)
             if symbol_id := v.get("id"):
                 symbol_to_coin_map[symbol_id] = coin
+            info = v.get("info") or {}
+            if "baseId" in info and info["baseId"] not in (None, ""):
+                base_id = str(info["baseId"])
+                for internal_id in (base_id, f"@{base_id}"):
+                    symbol_to_coin_map[internal_id] = coin
+                    coin_to_symbol_map[internal_id].add(k)
         except Exception:
             # Skip malformed market entries but continue processing others
             continue
@@ -981,6 +987,19 @@ def coin_to_symbol(coin, exchange, quote=None, verbose=True):
     ex = to_standard_exchange_name(exchange or "")
     quote = get_quote(ex, quote)
     coin_sanitized = symbol_to_coin(coin, verbose=verbose)
+
+    # Internal asset ids (e.g. Hyperliquid "@107") are not canonical exchange symbols.
+    # Never fabricate pseudo symbols like "@107/USDC:USDC" for external API calls.
+    if isinstance(coin_sanitized, str) and coin_sanitized.startswith("@"):
+        if verbose:
+            logging.error(
+                "coin_to_symbol received internal asset id %s (raw=%s) on %s; refusing pseudo-symbol fallback",
+                coin_sanitized,
+                coin,
+                ex,
+            )
+        return coin_sanitized
+
     fallback = f"{coin_sanitized}/{quote}:{quote}"
     try:
         loaded = _load_coin_to_symbol_map(ex)

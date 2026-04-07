@@ -105,6 +105,12 @@ class HyperliquidBot(CCXTBot):
         self._hl_last_logged_user_abstraction = abstraction
         return abstraction
 
+    def _safe_symbol_from_exchange(self, symbol: str) -> str:
+        try:
+            return self.get_symbol_id_inv(symbol)
+        except Exception:
+            return symbol
+
     def create_ccxt_sessions(self):
         creds = {
             "walletAddress": self.user_info["wallet_address"],
@@ -137,6 +143,10 @@ class HyperliquidBot(CCXTBot):
         for symbol in self.markets_dict:
             elm = self.markets_dict[symbol]
             self.symbol_ids[symbol] = elm["id"]
+            info = elm.get("info") or {}
+            if "baseId" in info and info["baseId"] not in (None, ""):
+                base_id = str(info["baseId"])
+                self.symbol_ids_inv[base_id] = symbol
             self.min_costs[symbol] = (
                 10.0 if elm["limits"]["cost"]["min"] is None else elm["limits"]["cost"]["min"]
             )
@@ -246,6 +256,12 @@ class HyperliquidBot(CCXTBot):
             dex_name = self._get_hl_dex_for_symbol(symbol)
             if dex_name:
                 dexes.add(dex_name)
+        configured = (
+            getattr(self, "cca", None)
+            and getattr(self.cca, "options", {}).get("fetchMarkets", {}).get("hip3", {}).get("dex", [])
+        )
+        if isinstance(configured, (list, tuple, set)):
+            dexes.update([x for x in configured if x])
         return sorted(dexes)
 
     def _normalize_ccxt_position(self, position: dict) -> dict:
@@ -263,8 +279,9 @@ class HyperliquidBot(CCXTBot):
         info_position = {}
         if isinstance(position.get("info"), dict):
             info_position = position["info"].get("position", {}) or {}
+        symbol = self._safe_symbol_from_exchange(position["symbol"])
         return {
-            "symbol": position["symbol"],
+            "symbol": symbol,
             "position_side": side,
             "size": contracts,
             "price": float(position.get("entryPrice") or 0.0),
@@ -286,6 +303,7 @@ class HyperliquidBot(CCXTBot):
             fetched = await self.cca.fetch_positions(**fetch_spec)
             if include_raw:
                 raw_payloads.append({"fetch_spec": deepcopy(fetch_spec), "response": deepcopy(fetched)})
+            dex = fetch_spec["params"]["dex"]
             for position in fetched:
                 normalized = self._normalize_ccxt_position(position)
                 if not self._get_hl_dex_for_symbol(normalized["symbol"]):
@@ -293,6 +311,8 @@ class HyperliquidBot(CCXTBot):
                 self._record_hl_live_margin_mode(
                     normalized["symbol"], normalized.get("margin_mode")
                 )
+                if self._get_hl_dex_for_symbol(normalized["symbol"]) != dex:
+                    continue
                 key = (normalized["symbol"], normalized["position_side"])
                 positions_by_key[key] = normalized
         normalized_positions = list(positions_by_key.values())
@@ -368,6 +388,7 @@ class HyperliquidBot(CCXTBot):
                 res = await self.ccp.watch_orders()
                 _ws_consecutive_rate_limits = 0  # reset on success
                 for i in range(len(res)):
+                    res[i]["symbol"] = self._safe_symbol_from_exchange(res[i]["symbol"])
                     res[i]["position_side"] = self.determine_pos_side(res[i])
                     res[i]["qty"] = res[i]["amount"]
                 self.handle_order_update(res)
@@ -431,6 +452,7 @@ class HyperliquidBot(CCXTBot):
                 if order["id"] in seen_ids:
                     continue
                 seen_ids.add(order["id"])
+                order["_pb_fetch_source"] = f"default:{symbol or '*'}"
                 fetched.append(order)
 
         if symbol is not None and self._get_hl_dex_for_symbol(symbol):
@@ -443,6 +465,7 @@ class HyperliquidBot(CCXTBot):
                 if order["id"] in seen_ids:
                     continue
                 seen_ids.add(order["id"])
+                order["_pb_fetch_source"] = f"hip3:{hip3_symbol}"
                 fetched.append(order)
 
         for dex_name in query_dexes:
@@ -450,14 +473,28 @@ class HyperliquidBot(CCXTBot):
                 if order["id"] in seen_ids:
                     continue
                 seen_ids.add(order["id"])
+                order["_pb_fetch_source"] = f"dex:{dex_name}"
                 fetched.append(order)
         return fetched
 
     def _normalize_open_orders(self, fetched: list) -> list:
+        filtered = []
         for elm in fetched:
+            source = elm.pop("_pb_fetch_source", "unknown")
+            raw_symbol = elm.get("symbol")
+            if isinstance(raw_symbol, str) and raw_symbol.startswith("@"):
+                logging.debug(
+                    "[diag][skip_spot_open_order] raw_symbol=%s id=%s route=%s",
+                    raw_symbol,
+                    elm.get("id", "?"),
+                    source,
+                )
+                continue
+            elm["symbol"] = self._safe_symbol_from_exchange(elm["symbol"])
             elm["position_side"] = self.determine_pos_side(elm)
             elm["qty"] = elm["amount"]
-        return sorted(fetched, key=lambda x: x["timestamp"])
+            filtered.append(elm)
+        return sorted(filtered, key=lambda x: x["timestamp"])
 
     async def fetch_open_orders(self, symbol: str = None):
         fetched = await self._do_fetch_open_orders(symbol=symbol)
@@ -465,6 +502,13 @@ class HyperliquidBot(CCXTBot):
 
     async def _fetch_positions_and_balance(self):
         info = await self.cca.fetch_balance()
+        quote = getattr(self, "quote", "USDC")
+        if quote in info.get("total", {}):
+            equity = float(info["total"][quote])
+        else:
+            equity = float(info["info"]["marginSummary"]["accountValue"]) - sum(
+                [float(x["position"]["unrealizedPnl"]) for x in info["info"]["assetPositions"]]
+            )
         positions = {}
         for x in info["info"]["assetPositions"]:
             symbol = self.coin_to_symbol(x["position"]["coin"])
