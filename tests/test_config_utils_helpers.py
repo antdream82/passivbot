@@ -372,6 +372,41 @@ def test_normalize_limit_entries_preserves_optional_fields_on_canonical_entries(
     assert normalized[1]["enabled"] is False
 
 
+def test_normalize_limit_entries_supports_scenario_and_rejects_stat():
+    normalized = config_utils.normalize_limit_entries(
+        [
+            {
+                "metric": "drawdown_worst",
+                "scenario": "Stress_COVID",
+                "penalize_if": "greater_than",
+                "value": 0.3,
+            }
+        ]
+    )
+
+    assert normalized == [
+        {
+            "metric": "drawdown_worst_usd",
+            "scenario": "Stress_COVID",
+            "penalize_if": "greater_than",
+            "value": 0.3,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="cannot include 'stat'"):
+        config_utils.normalize_limit_entries(
+            [
+                {
+                    "metric": "drawdown_worst",
+                    "scenario": "Stress_COVID",
+                    "penalize_if": "greater_than",
+                    "value": 0.3,
+                    "stat": "max",
+                }
+            ]
+        )
+
+
 def test_load_config_preserves_canonical_optimize_limits(tmp_path):
     cfg = get_template_config()
     cfg["optimize"]["limits"] = [
@@ -764,13 +799,16 @@ def _make_live_only_source_config():
 
 
 @pytest.mark.parametrize("start_flag", ["-sd", "--start-date"])
-def test_backtest_cli_start_date_override_creates_missing_backtest_section(start_flag):
-    source_config = _make_live_only_source_config()
+def test_backtest_cli_start_date_override_creates_missing_backtest_section(start_flag, tmp_path):
+    cfg_path = tmp_path / "minimal.json"
+    cfg_path.write_text(json.dumps({"bot": {"long": {}, "short": {}}, "live": {}}))
+
+    source_config, _, _ = load_input_config(str(cfg_path))
     assert "backtest" not in source_config
 
     args, allowed_config_keys = _parse_backtest_args(
         [
-            "configs/hype.json",
+            str(cfg_path),
             "--bot.long.hsl_ema_span_minutes",
             "1440",
             start_flag,

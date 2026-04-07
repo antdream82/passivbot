@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 import backtest as bt
 import plotting
@@ -86,6 +87,18 @@ def _make_analysis_entry(value):
     return analysis
 
 
+def _make_fills_with_exposure():
+    return np.array(
+        [
+            [0, 1704067200000, "BTC", 0.0, 0.0, 1000.0, 0.0, 1000.0, 50000.0, 0.0, 0.0, 0.0, 0.0, "long_entry", "maker", 0.0, 0.2, 0.0, 0.2],
+            [1, 1704067260000, "BTC", 0.0, 0.0, 1000.5, 0.0, 1000.5, 50000.0, 0.0, 0.0, 0.0, 0.0, "short_entry", "maker", 0.0, 0.2, -0.4, -0.2],
+            [2, 1704067320000, "BTC", 0.0, 0.0, 1001.0, 0.0, 1001.0, 50000.0, 0.0, 0.0, 0.0, 0.0, "long_entry", "maker", 0.0, 0.8, -0.4, 0.4],
+            [3, 1704067380000, "BTC", 0.0, 0.0, 999.5, 0.0, 999.5, 50000.0, 0.0, 0.0, 0.0, 0.0, "short_entry", "maker", 0.0, 0.8, -0.8, 0.0],
+        ],
+        dtype=object,
+    )
+
+
 def test_expand_analysis_includes_entry_balance_pct():
     analysis_usd = _make_analysis_entry(0.123)
     analysis_btc = _make_analysis_entry(0.456)
@@ -157,6 +170,45 @@ def test_expand_analysis_includes_day_duration_metrics():
     assert result["high_exposure_days_max_short"] == 2.0
     assert result["peak_recovery_days_equity_usd"] == 1.25
     assert result["peak_recovery_days_equity_btc"] == 2.5
+
+
+def test_expand_analysis_adds_actual_exposure_metrics():
+    analysis_usd = _make_analysis_entry(2.0)
+    analysis_btc = _make_analysis_entry(1.0)
+    analysis_usd["total_wallet_exposure_mean"] = 0.5
+    analysis_btc["total_wallet_exposure_mean"] = 0.5
+    config = {
+        "bot": {
+            "long": {"total_wallet_exposure_limit": 1.0},
+            "short": {"total_wallet_exposure_limit": 1.0},
+        }
+    }
+
+    result = expand_analysis(
+        analysis_usd,
+        analysis_btc,
+        fills=_make_fills_with_exposure(),
+        equities_array=np.array(
+            [
+                [1704067200000, 1000.0, 0.02],
+                [1704067260000, 1000.0, 0.02],
+                [1704067320000, 1000.0, 0.02],
+                [1704067380000, 1000.0, 0.02],
+            ],
+            dtype=np.float64,
+        ),
+        config=config,
+    )
+
+    assert result["wallet_exposure_mean_long"] == pytest.approx(0.5)
+    assert result["wallet_exposure_median_long"] == pytest.approx(0.5)
+    assert result["wallet_exposure_max_long"] == pytest.approx(0.8)
+    assert result["wallet_exposure_mean_short"] == pytest.approx(0.4)
+    assert result["wallet_exposure_median_short"] == pytest.approx(0.4)
+    assert result["wallet_exposure_max_short"] == pytest.approx(0.8)
+    assert result["gain_per_actual_exposure_usd"] == pytest.approx(4.0)
+    assert result["gain_per_actual_exposure_long_usd"] == pytest.approx(4.0)
+    assert result["gain_per_actual_exposure_short_usd"] == pytest.approx(5.0)
 
 
 def test_expand_analysis_includes_trade_level_metrics():

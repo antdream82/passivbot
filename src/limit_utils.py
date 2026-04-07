@@ -149,9 +149,14 @@ def _build_single_bound_check(
     numeric_bound = _ensure_float(bound)
     if numeric_bound is None:
         return None
-    stat = resolve_limit_stat(entry, aggregate_cfg=aggregate_cfg)
-    metric_key = f"{metric}_{stat}"
-    return {
+    scenario = entry.get("scenario")
+    if scenario:
+        stat = ""
+        metric_key = metric
+    else:
+        stat = resolve_limit_stat(entry, aggregate_cfg=aggregate_cfg)
+        metric_key = f"{metric}_{stat}"
+    check = {
         "metric": metric,
         "metric_key": metric_key,
         "mode": mode,
@@ -160,6 +165,9 @@ def _build_single_bound_check(
         "stat": stat,
         "objective_indexes": list(objective_index_map.get(metric, [])) if objective_index_map else [],
     }
+    if scenario:
+        check["scenario"] = str(scenario)
+    return check
 
 
 def _build_range_check(
@@ -179,9 +187,14 @@ def _build_range_check(
         return None
     if low > high:
         low, high = high, low
-    stat = resolve_limit_stat(entry, aggregate_cfg=aggregate_cfg)
-    metric_key = f"{metric}_{stat}"
-    return {
+    scenario = entry.get("scenario")
+    if scenario:
+        stat = ""
+        metric_key = metric
+    else:
+        stat = resolve_limit_stat(entry, aggregate_cfg=aggregate_cfg)
+        metric_key = f"{metric}_{stat}"
+    check = {
         "metric": metric,
         "metric_key": metric_key,
         "mode": mode,
@@ -190,3 +203,6 @@ def _build_range_check(
         "stat": stat,
         "objective_indexes": list(objective_index_map.get(metric, [])) if objective_index_map else [],
     }
+    if scenario:
+        check["scenario"] = str(scenario)
+    return check

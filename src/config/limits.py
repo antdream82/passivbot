@@ -162,9 +162,12 @@ def parse_limit_cli_entry(raw_entry: Union[str, Dict[str, Any]]) -> Dict[str, An
             entry["stat"] = value
         elif key == "enabled":
             entry["enabled"] = _parse_cli_bool(value)
+        elif key == "scenario":
+            entry["scenario"] = value
         else:
             raise ValueError(
-                f"Unsupported CLI --limit option {key!r}; supported extras are stat=... and enabled=..."
+                "Unsupported CLI --limit option "
+                f"{key!r}; supported extras are stat=..., scenario=..., and enabled=..."
             )
 
     return _normalize_limit_entry_preserve_extras(entry)
@@ -287,14 +290,24 @@ def _normalize_limit_entry(entry: Any) -> Dict[str, Any]:
         penalize_if = "greater_than"
     else:
         penalize_if = _normalize_penalize_if(raw_penalize_if)
+    scenario = payload.get("scenario")
+    normalized_scenario: Optional[str] = None
+    if scenario is not None:
+        scenario_str = str(scenario).strip()
+        if scenario_str:
+            normalized_scenario = scenario_str
     stat = payload.get("stat") or payload.get("field")
     normalized_stat: Optional[str] = None
+    if normalized_scenario and stat not in (None, ""):
+        raise ValueError(f"Scenario-specific limit for {metric} cannot include 'stat'.")
     if stat is not None:
         stat = str(stat).lower()
         if stat not in SUPPORTED_LIMIT_STATS:
             raise ValueError(f"Unsupported stat '{stat}' for limit on {metric}.")
         normalized_stat = stat
     result: Dict[str, Any] = {"metric": metric, "penalize_if": penalize_if}
+    if normalized_scenario:
+        result["scenario"] = normalized_scenario
     if normalized_stat:
         result["stat"] = normalized_stat
     if penalize_if in {

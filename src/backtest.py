@@ -1659,9 +1659,81 @@ def prep_backtest_args(
 def expand_analysis(analysis_usd, analysis_btc, fills, equities_array, config):
     analysis_usd = dict(analysis_usd)
     analysis_btc = dict(analysis_btc)
+    total_actual_exposure = float(analysis_usd.get("total_wallet_exposure_mean", 0.0) or 0.0)
+    fill_columns = [
+        "index",
+        "timestamp",
+        "coin",
+        "pnl",
+        "fee_paid",
+        "usd_total_balance",
+        "btc_cash_wallet",
+        "usd_cash_wallet",
+        "btc_price",
+        "qty",
+        "price",
+        "psize",
+        "pprice",
+        "type",
+        "liquidity",
+        "wallet_exposure",
+        "twe_long",
+        "twe_short",
+        "twe_net",
+    ]
+    fills_array = np.asarray(fills)
+    if fills_array.size == 0:
+        fills_df = pd.DataFrame(columns=fill_columns)
+    else:
+        fills_df = pd.DataFrame(fills, columns=fill_columns)
+    total_steps = int(len(equities_array))
+    actual_exposure_means = {"long": 0.0, "short": 0.0}
+    if total_steps > 0:
+        if fills_df.empty:
+            exposure_series = {
+                "long": np.zeros(total_steps, dtype=float),
+                "short": np.zeros(total_steps, dtype=float),
+            }
+        else:
+            fills_df["index"] = pd.to_numeric(fills_df["index"], errors="coerce").fillna(-1).astype(int)
+            fills_df["twe_long"] = pd.to_numeric(fills_df["twe_long"], errors="coerce").fillna(0.0)
+            fills_df["twe_short"] = pd.to_numeric(fills_df["twe_short"], errors="coerce").fillna(0.0)
+            fills_df = fills_df.sort_values("index")
+            exposure_series = {}
+            for pside, twe_col in (("long", "twe_long"), ("short", "twe_short")):
+                exposure_at_fill = (
+                    fills_df.groupby("index")[twe_col]
+                    .last()
+                    .reindex(range(total_steps), fill_value=np.nan)
+                )
+                exposure_at_fill = exposure_at_fill.ffill().fillna(0.0)
+                exposure_series[pside] = np.abs(exposure_at_fill.to_numpy(dtype=float))
+        for pside, values in exposure_series.items():
+            mean_value = float(np.mean(values))
+            median_value = float(np.median(values))
+            max_value = float(np.max(values))
+            actual_exposure_means[pside] = mean_value
+            analysis_usd[f"wallet_exposure_mean_{pside}"] = mean_value
+            analysis_btc[f"wallet_exposure_mean_{pside}"] = mean_value
+            analysis_usd[f"wallet_exposure_median_{pside}"] = median_value
+            analysis_btc[f"wallet_exposure_median_{pside}"] = median_value
+            analysis_usd[f"wallet_exposure_max_{pside}"] = max_value
+            analysis_btc[f"wallet_exposure_max_{pside}"] = max_value
     keys = ["adg", "adg_w", "mdg", "mdg_w", "gain"]
+    for key in keys:
+        analysis_usd[f"{key}_per_actual_exposure"] = (
+            (analysis_usd[key] / total_actual_exposure if total_actual_exposure > 0.0 else 0.0)
+            if analysis_usd[key] is not None
+            else None
+        )
+        analysis_btc[f"{key}_per_actual_exposure"] = (
+            (analysis_btc[key] / total_actual_exposure if total_actual_exposure > 0.0 else 0.0)
+            if analysis_btc[key] is not None
+            else None
+        )
     for pside in ["long", "short"]:
         twel = float(require_config_value(config, f"bot.{pside}.total_wallet_exposure_limit"))
+        actual_exposure = actual_exposure_means.get(pside, 0.0)
         for key in keys:
             analysis_usd[f"{key}_per_exposure_{pside}"] = (
                 (analysis_usd[key] / twel if twel > 0.0 else 0.0)
@@ -1670,6 +1742,16 @@ def expand_analysis(analysis_usd, analysis_btc, fills, equities_array, config):
             )
             analysis_btc[f"{key}_per_exposure_{pside}"] = (
                 (analysis_btc[key] / twel if twel > 0.0 else 0.0)
+                if analysis_btc[key] is not None
+                else None
+            )
+            analysis_usd[f"{key}_per_actual_exposure_{pside}"] = (
+                (analysis_usd[key] / actual_exposure if actual_exposure > 0.0 else 0.0)
+                if analysis_usd[key] is not None
+                else None
+            )
+            analysis_btc[f"{key}_per_actual_exposure_{pside}"] = (
+                (analysis_btc[key] / actual_exposure if actual_exposure > 0.0 else 0.0)
                 if analysis_btc[key] is not None
                 else None
             )

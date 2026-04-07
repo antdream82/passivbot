@@ -1036,11 +1036,20 @@ class Evaluator:
             aggregate_cfg=aggregate_cfg,
         )
 
-    def calc_fitness(self, analyses_combined, *, return_raw_objectives: bool = False):
+    def _resolve_limit_check_value(self, check: Dict[str, Any], analyses_combined, suite_metrics=None):
+        scenario = check.get("scenario")
+        if not scenario:
+            return resolve_metric_value(analyses_combined, check["metric_key"])
+        suite_metrics_map = (suite_metrics or {}).get("metrics") or {}
+        metric_payload = suite_metrics_map.get(check.get("metric")) or {}
+        scenario_values = metric_payload.get("scenarios") or {}
+        return scenario_values.get(scenario)
+
+    def calc_fitness(self, analyses_combined, suite_metrics=None, *, return_raw_objectives: bool = False):
         per_objective_modifier = [0.0] * len(self.scoring_specs)
         global_modifier = 0.0
         for check in self.limit_checks:
-            val = resolve_metric_value(analyses_combined, check["metric_key"])
+            val = self._resolve_limit_check_value(check, analyses_combined, suite_metrics=suite_metrics)
             penalty = compute_limit_violation(check, val)
             if not penalty:
                 continue
@@ -1362,7 +1371,7 @@ class SuiteEvaluator:
         aggregated_values = aggregate_summary.get("aggregated", {})
         for metric, agg_value in aggregated_values.items():
             flat_stats[f"{metric}_mean"] = agg_value
-        objectives, total_penalty = self.base.calc_fitness(flat_stats)
+        objectives, total_penalty = self.base.calc_fitness(flat_stats, suite_metrics=suite_payload)
         objectives_map = {f"w_{i}": val for i, val in enumerate(objectives)}
 
         metrics_payload = {
