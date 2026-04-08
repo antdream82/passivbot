@@ -102,6 +102,12 @@ def _make_fills_with_exposure():
     )
 
 
+def _make_legacy_fills_without_liquidity():
+    fills = _make_fills_with_exposure()
+    # Legacy Rust payloads omitted the liquidity column between type and wallet_exposure.
+    return np.delete(fills, 14, axis=1)
+
+
 def test_expand_analysis_includes_entry_balance_pct():
     analysis_usd = _make_analysis_entry(0.123)
     analysis_btc = _make_analysis_entry(0.456)
@@ -212,6 +218,39 @@ def test_expand_analysis_adds_actual_exposure_metrics():
     assert result["gain_per_actual_exposure_usd"] == pytest.approx(4.0)
     assert result["gain_per_actual_exposure_long_usd"] == pytest.approx(4.0)
     assert result["gain_per_actual_exposure_short_usd"] == pytest.approx(5.0)
+
+
+def test_expand_analysis_accepts_legacy_fill_payload_without_liquidity():
+    analysis_usd = _make_analysis_entry(2.0)
+    analysis_btc = _make_analysis_entry(1.0)
+    analysis_usd["total_wallet_exposure_mean"] = 0.5
+    analysis_btc["total_wallet_exposure_mean"] = 0.5
+    config = {
+        "bot": {
+            "long": {"total_wallet_exposure_limit": 1.0},
+            "short": {"total_wallet_exposure_limit": 1.0},
+        }
+    }
+
+    result = expand_analysis(
+        analysis_usd,
+        analysis_btc,
+        fills=_make_legacy_fills_without_liquidity(),
+        equities_array=np.array(
+            [
+                [1704067200000, 1000.0, 0.02],
+                [1704067260000, 1000.0, 0.02],
+                [1704067320000, 1000.0, 0.02],
+                [1704067380000, 1000.0, 0.02],
+            ],
+            dtype=np.float64,
+        ),
+        config=config,
+    )
+
+    assert result["wallet_exposure_mean_long"] == pytest.approx(0.5)
+    assert result["wallet_exposure_mean_short"] == pytest.approx(0.4)
+    assert result["gain_per_actual_exposure_usd"] == pytest.approx(4.0)
 
 
 def test_expand_analysis_includes_trade_level_metrics():

@@ -12,6 +12,7 @@ from config.schema import get_template_config
 from optimization.bounds import Bound
 
 OPTIMIZABLE_BOT_KEY_PATHS = {
+    "long_forager_volume_drop_pct": ("bot", "long", "forager_volume_drop_pct"),
     "long_forager_volume_ema_span": ("bot", "long", "forager_volume_ema_span"),
     "long_filter_volume_ema_span": ("bot", "long", "forager_volume_ema_span"),
     "long_forager_volatility_ema_span": ("bot", "long", "forager_volatility_ema_span"),
@@ -42,6 +43,7 @@ OPTIMIZABLE_BOT_KEY_PATHS = {
         "forager_score_weights",
         "volatility",
     ),
+    "short_forager_volume_drop_pct": ("bot", "short", "forager_volume_drop_pct"),
     "short_forager_volume_ema_span": ("bot", "short", "forager_volume_ema_span"),
     "short_filter_volume_ema_span": ("bot", "short", "forager_volume_ema_span"),
     "short_forager_volatility_ema_span": ("bot", "short", "forager_volatility_ema_span"),
@@ -49,10 +51,23 @@ OPTIMIZABLE_BOT_KEY_PATHS = {
 }
 
 DEPRECATED_OPTIMIZE_BOUND_ALIASES = {
+    "long_filter_volume_drop_pct": "long_forager_volume_drop_pct",
     "long_filter_volume_ema_span": "long_forager_volume_ema_span",
     "long_filter_volatility_ema_span": "long_forager_volatility_ema_span",
+    "short_filter_volume_drop_pct": "short_forager_volume_drop_pct",
     "short_filter_volume_ema_span": "short_forager_volume_ema_span",
     "short_filter_volatility_ema_span": "short_forager_volatility_ema_span",
+}
+
+OBSOLETE_OPTIMIZE_BOUND_KEYS = {
+    "long_filter_volatility_drop_pct",
+    "short_filter_volatility_drop_pct",
+}
+
+HSL_BOUND_KEYS = {
+    "hsl_red_threshold",
+    "hsl_ema_span_minutes",
+    "hsl_cooldown_minutes_after_red",
 }
 
 
@@ -121,8 +136,16 @@ def get_optimization_key_paths(config) -> List[Tuple[str, Tuple[str, ...]]]:
     for bound_key in sorted(optimize_bounds):
         if not isinstance(bound_key, str):
             continue
+        if bound_key in OBSOLETE_OPTIMIZE_BOUND_KEYS:
+            # Older configs may still carry legacy bounds for filter_volatility_drop_pct.
+            # The current optimizer no longer exposes these as optimizable axes, so they
+            # must be ignored rather than treated as a hard mapping error for seed configs.
+            continue
         canonical_key = DEPRECATED_OPTIMIZE_BOUND_ALIASES.get(bound_key)
         if canonical_key is not None and canonical_key in optimize_bounds:
+            continue
+        if canonical_key is not None and canonical_key in OPTIMIZABLE_BOT_KEY_PATHS:
+            key_paths.append((bound_key, OPTIMIZABLE_BOT_KEY_PATHS[canonical_key]))
             continue
         if bound_key in OPTIMIZABLE_BOT_KEY_PATHS:
             key_paths.append((bound_key, OPTIMIZABLE_BOT_KEY_PATHS[bound_key]))
@@ -150,23 +173,29 @@ def extract_bounds_tuple_list_from_config(config) -> List[Bound]:
     if bot_config is None:
         bot_config = get_template_config()["bot"]
     pside_enabled = {}
+    pside_hsl_enabled = {}
     for pside in ("long", "short"):
         pside_enabled[pside] = all(
             Bound.from_config(k, optimize_bounds[k]).high > 0.0
             for k in [f"{pside}_n_positions", f"{pside}_total_wallet_exposure_limit"]
         )
+        pside_hsl_enabled[pside] = bool(bot_config.get(pside, {}).get("hsl_enabled", False))
 
     for bound_key, path in key_paths:
         assert bound_key in optimize_bounds, f"bound {bound_key} missing from optimize.bounds"
         bound_vals = Bound.from_config(bound_key, optimize_bounds[bound_key])
         if len(path) >= 2 and path[:2] == ("bot", "long"):
-            if pside_enabled["long"]:
+            if len(path) >= 3 and path[2] in HSL_BOUND_KEYS and not pside_hsl_enabled["long"]:
+                bounds.append(Bound(bound_vals.low, bound_vals.low, bound_vals.step))
+            elif pside_enabled["long"]:
                 bounds.append(bound_vals)
             else:
                 bounds.append(Bound(bound_vals.low, bound_vals.low, bound_vals.step))
             continue
         if len(path) >= 2 and path[:2] == ("bot", "short"):
-            if pside_enabled["short"]:
+            if len(path) >= 3 and path[2] in HSL_BOUND_KEYS and not pside_hsl_enabled["short"]:
+                bounds.append(Bound(bound_vals.low, bound_vals.low, bound_vals.step))
+            elif pside_enabled["short"]:
                 bounds.append(bound_vals)
             else:
                 bounds.append(Bound(bound_vals.low, bound_vals.low, bound_vals.step))
