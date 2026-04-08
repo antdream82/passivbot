@@ -1589,13 +1589,31 @@ def _extract_starting_config(raw_config, *, source: str = "<memory>"):
     bot_cfg = current.get("bot")
     if not isinstance(bot_cfg, dict):
         raise KeyError("missing bot config")
-    extracted = {
-        "bot": format_bot_config(
-            bot_cfg,
-            live_cfg=current.get("live"),
-            verbose=False,
-        )
-    }
+    formatted_bot = format_bot_config(
+        bot_cfg,
+        live_cfg=current.get("live"),
+        verbose=False,
+    )
+    for pside in ("long", "short"):
+        raw_pside_cfg = bot_cfg.get(pside)
+        if not isinstance(raw_pside_cfg, dict):
+            continue
+        raw_weights = raw_pside_cfg.get("forager_score_weights")
+        if not isinstance(raw_weights, dict):
+            continue
+        try:
+            if all(float(raw_weights.get(k, 0.0)) == 0.0 for k in ("volume", "ema_readiness", "volatility")):
+                # Preserve explicit all-zero forager weights from seed files. These can be
+                # intentional fixed optimizer dimensions, and normalizing them to
+                # volume-only changes seeded candidates before optimization even starts.
+                formatted_bot[pside]["forager_score_weights"] = {
+                    "volume": 0.0,
+                    "ema_readiness": 0.0,
+                    "volatility": 0.0,
+                }
+        except (TypeError, ValueError):
+            pass
+    extracted = {"bot": formatted_bot}
     live_cfg = current.get("live")
     if isinstance(live_cfg, dict) and live_cfg.get("strategy_kind"):
         extracted["live"] = {"strategy_kind": live_cfg["strategy_kind"]}

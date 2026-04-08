@@ -145,12 +145,153 @@ Start from `upstream/master`, then restore the following divergence packages:
    - map legacy alias bounds such as old `filter_*` keys where still sensible
    - never reuse stale seed `optimize.bounds` in a way that causes
      values/bounds length mismatches
+   - preserve explicit all-zero `forager_score_weights` from seed configs when
+     reconstructing optimizer candidates
+8. Side-specific `live.approved_coins` / `ignored_coins` must stay side-specific
+   through all suite and optimizer evaluation paths. Dataset preparation may use
+   the union of coins, but candidate evaluation must not widen the actual
+   tradable universe for a side.
+9. When suite datasets are prepared from a union coin set but the active
+   backtest coin order shrinks after side gating, payload construction must
+   subset the OHLCV tensor to the active coin order before building the Rust
+   bundle.
 
 ### Notes
 
 - Preserve upstream zero-fill safety while layering local metrics.
 - Starting-config compatibility matters because PBGUI and historical optimize
   outputs are used as seeds in production.
+
+### Critical regression: suite and optimizer evaluation must preserve side-specific approved coins
+
+This regression was the main reason old seed Pareto fronts appeared to collapse
+under the current local engine even when the exact bot config matched.
+
+#### What broke
+
+Several suite-oriented paths widened `approved_coins` and `ignored_coins` from
+side-specific values into the union of both sides:
+
+- [src/suite_runner.py](/app/pb7/src/suite_runner.py)
+- [src/optimize_suite.py](/app/pb7/src/optimize_suite.py)
+
+That widened config was then used not only for dataset preparation, but also
+for actual scenario evaluation. In side-specific one-coin configs this caused
+the backtester and optimizer to evaluate a different tradable universe than the
+config requested.
+
+Separately, [src/backtest.py](/app/pb7/src/backtest.py) could receive a union
+OHLCV tensor while `prep_backtest_args()` had already reduced the active coin
+order after side gating. Without an extra subset step, the Rust bundle would
+either:
+
+- error due to coin metadata / tensor length mismatch, or
+- evaluate the wrong coin index set when lazy slice indices were reused.
+
+#### Why that is a regression
+
+Historical optimize results were being compared against "exact-match" bot
+configs, but the reevaluation was not exact in practice because the coin
+universe had already drifted.
+
+Observed failure mode:
+
+1. The stored seed bot used side-specific one-coin settings, e.g.
+   `long=["xyz:XYZ"]`, `short=["xyz:SP500"]`, `short.n_positions=0`.
+2. Suite/optimizer preparation widened that to both sides seeing both coins.
+3. Reevaluation entered coins that the original config never allowed.
+4. Seed Pareto continuity appeared broken, even though the bot parameters
+   matched exactly.
+
+#### Required behavior
+
+1. Preserve the original side-specific `approved_coins` / `ignored_coins` in
+   the evaluation config.
+2. If a union coin set is needed for cache or dataset preparation, use a
+   separate temporary dataset config and keep the base evaluation config
+   untouched.
+3. For base scenarios with no explicit `scenario.coins`, preserve the original
+   per-side approved / ignored lists and only intersect them with available
+   coins.
+4. Before building the Rust backtest bundle, subset OHLCV and lazy-slice
+   metadata to the active post-gating coin order.
+
+#### Validation
+
+Minimum validation for this regression:
+
+1. Run:
+   `cd /app/pb7 && /venv_pb7/bin/pytest tests/test_suite_runner.py tests/test_realized_loss_gate.py -q`
+2. Confirm side-specific base scenarios still save:
+   - `approved_coins.long = ["xyz:XYZ"]`
+   - `approved_coins.short = ["xyz:SP500"]`
+3. Confirm the corresponding `fills.csv` contains no long fills for
+   `xyz:SP500`.
+4. Re-run a seeded optimize smoke and confirm the first evaluated seed
+   candidates remain zero-constraint instead of collapsing into immediate
+   penalty fronts.
+
+### Critical regression: seeded configs must preserve fixed zero forager weights
+
+This is a separate seeded-optimize regression from the unstuck issue above.
+
+#### What broke
+
+Historical optimize seed configs may intentionally contain:
+
+- `bot.long.forager_score_weights = {volume: 0, ema_readiness: 0, volatility: 0}`
+- `bot.short.forager_score_weights = {volume: 0, ema_readiness: 0, volatility: 0}`
+
+and the current run may also pin the corresponding optimize bounds to zero:
+
+- `*_forager_score_weights_volume = [0, 0, step]`
+- `*_forager_score_weights_ema_readiness = [0, 0, step]`
+- `*_forager_score_weights_volatility = [0, 0, step]`
+
+Before the fix, PB7 mutated those seeds in two places:
+
+1. `_extract_starting_config()` ran `format_bot_config()` which normalized an
+   explicit all-zero vector to volume-only `{volume: 1.0, ...}`.
+2. `individual_to_config()` normalized the reconstructed config again, so even
+   if the individual vector was all-zero the final candidate became
+   volume-only.
+
+That means a seed config was not actually re-used as the same candidate.
+
+#### Why that is a bug
+
+When all three forager weight bounds are fixed to zero, an all-zero seed vector
+is not malformed. It is an intentional fixed optimizer state.
+
+Normalizing that to `{volume: 1.0, ema_readiness: 0.0, volatility: 0.0}`:
+
+- changes the candidate before optimization starts
+- changes seeded-search behavior without any bounds change
+- can materially alter multi-coin ranking behavior
+- breaks the expectation that a seed Pareto frontier is preserved when it still
+  fits within the new run bounds
+
+#### Required behavior
+
+1. Loading a starting config must preserve explicit all-zero
+   `forager_score_weights`.
+2. Reconstructing a config from an individual must preserve explicit all-zero
+   `forager_score_weights` when the current run fixes all three corresponding
+   bounds to zero.
+3. Normalization to volume-only remains acceptable only when the weight vector
+   is not fixed by the current optimization bounds.
+
+#### Validation
+
+Minimum validation for this regression:
+
+1. Run:
+   `cd /app/pb7 && /venv_pb7/bin/pytest tests/optimization/test_optimize.py -q`
+2. Confirm the new tests covering:
+   - seed-file extraction with explicit all-zero forager weights
+   - `individual_to_config()` preservation when weight bounds are fixed to zero
+3. Spot-check a seeded run by loading the seed directory and verifying the
+   reconstructed config keeps the same all-zero weight vectors for both sides.
 
 ### Critical regression: unstuck allowance must stay cumulative
 

@@ -678,6 +678,81 @@ class TestIndividualToConfig:
         assert result["bot"]["short"]["a_param"] == 30.0
         assert result["bot"]["short"]["z_param"] == 40.0
 
+    def test_preserves_all_zero_forager_weights_when_bounds_fix_them_to_zero(self):
+        individual = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        template = {
+            "bot": {
+                "long": {
+                    "forager_score_weights": {
+                        "volume": 0.0,
+                        "ema_readiness": 0.0,
+                        "volatility": 0.0,
+                    }
+                },
+                "short": {
+                    "forager_score_weights": {
+                        "volume": 0.0,
+                        "ema_readiness": 0.0,
+                        "volatility": 0.0,
+                    }
+                },
+            },
+            "optimize": {
+                "bounds": {
+                    "long_forager_score_weights_ema_readiness": [0.0, 0.0, 0.01],
+                    "long_forager_score_weights_volatility": [0.0, 0.0, 0.01],
+                    "long_forager_score_weights_volume": [0.0, 0.0, 0.01],
+                    "short_forager_score_weights_ema_readiness": [0.0, 0.0, 0.01],
+                    "short_forager_score_weights_volatility": [0.0, 0.0, 0.01],
+                    "short_forager_score_weights_volume": [0.0, 0.0, 0.01],
+                }
+            },
+        }
+
+        result = individual_to_config(individual, lambda x, y, z: y, [], template)
+
+        assert result["bot"]["long"]["forager_score_weights"] == {
+            "volume": 0.0,
+            "ema_readiness": 0.0,
+            "volatility": 0.0,
+        }
+        assert result["bot"]["short"]["forager_score_weights"] == {
+            "volume": 0.0,
+            "ema_readiness": 0.0,
+            "volatility": 0.0,
+        }
+
+    def test_normalizes_all_zero_forager_weights_when_bounds_allow_movement(self):
+        individual = [0.0, 0.0, 0.0]
+        template = {
+            "bot": {
+                "long": {
+                    "forager_score_weights": {
+                        "volume": 0.0,
+                        "ema_readiness": 0.0,
+                        "volatility": 0.0,
+                    }
+                },
+                "short": {},
+            },
+            "optimize": {
+                "bounds": {
+                    "long_forager_score_weights_ema_readiness": [0.0, 1.0, 0.01],
+                    "long_forager_score_weights_volatility": [0.0, 1.0, 0.01],
+                    "long_forager_score_weights_volume": [0.0, 1.0, 0.01],
+                }
+            },
+        }
+
+        result = individual_to_config(individual, lambda x, y, z: y, [], template)
+
+        assert result["bot"]["long"]["forager_score_weights"] == {
+            "volume": 1.0,
+            "ema_readiness": 0.0,
+            "volatility": 0.0,
+        }
+
+
 class TestConfigToIndividual:
     """Test config_to_individual function."""
 
@@ -1124,6 +1199,41 @@ class TestExtractConfigs:
                 result[0]["bot"]["long"]["forager_score_weights"]["volatility"]
                 == template["bot"]["long"]["forager_score_weights"]["volatility"]
             )
+        finally:
+            os.unlink(path)
+
+    def test_json_file_preserves_explicit_all_zero_forager_weights(self):
+        from config_utils import get_template_config
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            template = get_template_config()
+            import json
+
+            template["bot"]["long"]["forager_score_weights"] = {
+                "volume": 0.0,
+                "ema_readiness": 0.0,
+                "volatility": 0.0,
+            }
+            template["bot"]["short"]["forager_score_weights"] = {
+                "volume": 0.0,
+                "ema_readiness": 0.0,
+                "volatility": 0.0,
+            }
+            f.write(json.dumps(template))
+            path = f.name
+        try:
+            result = extract_configs(path)
+            assert len(result) == 1
+            assert result[0]["bot"]["long"]["forager_score_weights"] == {
+                "volume": 0.0,
+                "ema_readiness": 0.0,
+                "volatility": 0.0,
+            }
+            assert result[0]["bot"]["short"]["forager_score_weights"] == {
+                "volume": 0.0,
+                "ema_readiness": 0.0,
+                "volatility": 0.0,
+            }
         finally:
             os.unlink(path)
 

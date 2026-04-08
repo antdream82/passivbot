@@ -679,15 +679,28 @@ def apply_scenario(
         backtest_section["coins"][exchange] = list(filtered_coins)
 
     if isinstance(live_section["approved_coins"], dict):
-        for side in ("long", "short"):
-            current = live_section["approved_coins"].get(side, [])
-            if current != filtered_coins:
-                tracker.update(
-                    ["live", "approved_coins", side],
-                    deepcopy(current),
-                    list(filtered_coins),
-                )
-            live_section["approved_coins"][side] = list(filtered_coins)
+        if scenario.coins is None:
+            for side in ("long", "short"):
+                current = live_section["approved_coins"].get(side, [])
+                side_filtered = [coin for coin in current if coin in available_coins]
+                side_filtered = sorted(dict.fromkeys(side_filtered))
+                if current != side_filtered:
+                    tracker.update(
+                        ["live", "approved_coins", side],
+                        deepcopy(current),
+                        list(side_filtered),
+                    )
+                live_section["approved_coins"][side] = list(side_filtered)
+        else:
+            for side in ("long", "short"):
+                current = live_section["approved_coins"].get(side, [])
+                if current != filtered_coins:
+                    tracker.update(
+                        ["live", "approved_coins", side],
+                        deepcopy(current),
+                        list(filtered_coins),
+                    )
+                live_section["approved_coins"][side] = list(filtered_coins)
     else:
         current = live_section.get("approved_coins")
         if current != filtered_coins:
@@ -695,15 +708,28 @@ def apply_scenario(
         live_section["approved_coins"] = list(filtered_coins)
 
     if isinstance(live_section["ignored_coins"], dict):
-        for side in ("long", "short"):
-            current = live_section["ignored_coins"].get(side, [])
-            if current != filtered_ignored:
-                tracker.update(
-                    ["live", "ignored_coins", side],
-                    deepcopy(current),
-                    list(filtered_ignored),
-                )
-            live_section["ignored_coins"][side] = list(filtered_ignored)
+        if scenario.ignored_coins is None:
+            for side in ("long", "short"):
+                current = live_section["ignored_coins"].get(side, [])
+                side_filtered = [coin for coin in current if coin in available_coins]
+                side_filtered = sorted(dict.fromkeys(side_filtered))
+                if current != side_filtered:
+                    tracker.update(
+                        ["live", "ignored_coins", side],
+                        deepcopy(current),
+                        list(side_filtered),
+                    )
+                live_section["ignored_coins"][side] = list(side_filtered)
+        else:
+            for side in ("long", "short"):
+                current = live_section["ignored_coins"].get(side, [])
+                if current != filtered_ignored:
+                    tracker.update(
+                        ["live", "ignored_coins", side],
+                        deepcopy(current),
+                        list(filtered_ignored),
+                    )
+                live_section["ignored_coins"][side] = list(filtered_ignored)
     else:
         current = live_section.get("ignored_coins")
         if current != filtered_ignored:
@@ -1443,20 +1469,22 @@ async def run_backtest_suite_async(
     base_config["backtest"]["end_date"] = global_end
     base_config.setdefault("backtest", {})
     base_config["backtest"]["coin_sources"] = suite_coin_sources
-    if isinstance(base_config["live"]["approved_coins"], dict):
-        base_config["live"]["approved_coins"]["long"] = list(master_coins)
-        base_config["live"]["approved_coins"]["short"] = list(master_coins)
+
+    dataset_config = deepcopy(base_config)
+    if isinstance(dataset_config["live"]["approved_coins"], dict):
+        dataset_config["live"]["approved_coins"]["long"] = list(master_coins)
+        dataset_config["live"]["approved_coins"]["short"] = list(master_coins)
     else:
-        base_config["live"]["approved_coins"] = list(master_coins)
-    if isinstance(base_config["live"]["ignored_coins"], dict):
-        base_config["live"]["ignored_coins"]["long"] = list(master_ignored)
-        base_config["live"]["ignored_coins"]["short"] = list(master_ignored)
+        dataset_config["live"]["approved_coins"] = list(master_coins)
+    if isinstance(dataset_config["live"]["ignored_coins"], dict):
+        dataset_config["live"]["ignored_coins"]["long"] = list(master_ignored)
+        dataset_config["live"]["ignored_coins"]["short"] = list(master_ignored)
     else:
-        base_config["live"]["ignored_coins"] = list(master_ignored)
+        dataset_config["live"]["ignored_coins"] = list(master_ignored)
 
     candle_interval = int(base_config.get("backtest", {}).get("candle_interval_minutes", 1) or 1)
     datasets = await prepare_master_datasets(
-        base_config,
+        dataset_config,
         exchanges_list,
         needed_individual_exchanges=needed_individual,
         candle_interval_minutes=candle_interval,

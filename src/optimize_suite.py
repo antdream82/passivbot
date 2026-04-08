@@ -123,22 +123,24 @@ async def prepare_suite_contexts(
     master_ignored_list = sorted(master_ignored)
 
     base_config = deepcopy(config)
-    if isinstance(base_config["live"]["approved_coins"], dict):
-        base_config["live"]["approved_coins"]["long"] = master_coins_list
-        base_config["live"]["approved_coins"]["short"] = master_coins_list
-    else:
-        base_config["live"]["approved_coins"] = master_coins_list
-    if isinstance(base_config["live"]["ignored_coins"], dict):
-        base_config["live"]["ignored_coins"]["long"] = master_ignored_list
-        base_config["live"]["ignored_coins"]["short"] = master_ignored_list
-    else:
-        base_config["live"]["ignored_coins"] = master_ignored_list
     base_config["backtest"]["coins"] = {}
     base_config["backtest"]["coin_sources"] = suite_coin_sources
 
+    dataset_config = deepcopy(base_config)
+    if isinstance(dataset_config["live"]["approved_coins"], dict):
+        dataset_config["live"]["approved_coins"]["long"] = master_coins_list
+        dataset_config["live"]["approved_coins"]["short"] = master_coins_list
+    else:
+        dataset_config["live"]["approved_coins"] = master_coins_list
+    if isinstance(dataset_config["live"]["ignored_coins"], dict):
+        dataset_config["live"]["ignored_coins"]["long"] = master_ignored_list
+        dataset_config["live"]["ignored_coins"]["short"] = master_ignored_list
+    else:
+        dataset_config["live"]["ignored_coins"] = master_ignored_list
+
     candle_interval = int(base_config.get("backtest", {}).get("candle_interval_minutes", 1) or 1)
     datasets = await prepare_master_datasets(
-        base_config,
+        dataset_config,
         base_exchanges,
         shared_array_manager=shared_array_manager,
         needed_individual_exchanges=needed_individual,

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from passivbot import Passivbot
-from backtest import prep_backtest_args
+from backtest import build_backtest_payload, prep_backtest_args
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -515,3 +515,135 @@ class TestPrepBacktestArgsEquityHardStopLoss:
         assert backtest_params["equity_hard_stop_loss"]["no_restart_drawdown_threshold"] == pytest.approx(
             0.3
         )
+
+
+class TestPrepBacktestArgsSideApprovedCoins:
+    def _make_config(self):
+        hsl_block = {
+            "hsl_enabled": False,
+            "hsl_red_threshold": 0.25,
+            "hsl_ema_span_minutes": 60.0,
+            "hsl_cooldown_minutes_after_red": 0.0,
+            "hsl_no_restart_drawdown_threshold": 1.0,
+            "hsl_tier_ratios": {"yellow": 0.5, "orange": 0.75},
+            "hsl_orange_tier_mode": "tp_only_with_active_entry_cancellation",
+            "hsl_panic_close_order_type": "limit",
+        }
+        return {
+            "backtest": {
+                "exchanges": ["binance"],
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-02",
+                "starting_balance": 10000,
+                "btc_collateral_cap": 0.0,
+                "btc_collateral_ltv_cap": None,
+                "filter_by_min_effective_cost": False,
+                "dynamic_wel_by_tradability": True,
+                "coin_sources": {},
+                "market_settings_sources": {},
+                "scenarios": [{"label": "base"}],
+            },
+            "bot": {
+                "long": {
+                    **hsl_block,
+                    "n_positions": 1,
+                    "total_wallet_exposure_limit": 1.0,
+                    "wallet_exposure_limit": 1.0,
+                },
+                "short": {
+                    **hsl_block,
+                    "n_positions": 1,
+                    "total_wallet_exposure_limit": 1.0,
+                    "wallet_exposure_limit": 1.0,
+                },
+            },
+            "live": {
+                "hedge_mode": True,
+                "approved_coins": {
+                    "long": ["BTC"],
+                    "short": ["ETH"],
+                },
+                "ignored_coins": {"long": [], "short": []},
+                "empty_means_all_approved": False,
+                "warmup_ratio": 0.0,
+                "max_warmup_minutes": 0.0,
+                "max_realized_loss_pct": 1.0,
+                "pnls_max_lookback_days": 30.0,
+            },
+            "coin_overrides": {},
+        }
+
+    def _make_mss(self):
+        return {
+            "BTC": {
+                "qty_step": 0.001,
+                "price_step": 0.01,
+                "min_qty": 0.001,
+                "min_cost": 10.0,
+                "c_mult": 1.0,
+                "maker": 0.0002,
+            },
+            "ETH": {
+                "qty_step": 0.001,
+                "price_step": 0.01,
+                "min_qty": 0.001,
+                "min_cost": 10.0,
+                "c_mult": 1.0,
+                "maker": 0.0002,
+            },
+        }
+
+    def test_disables_pside_for_unapproved_coin(self):
+        config = self._make_config()
+        bot_params_list, _, _ = prep_backtest_args(config, self._make_mss(), "binance")
+        per_coin = dict(zip(["BTC", "ETH"], bot_params_list))
+
+        assert per_coin["BTC"]["long"]["n_positions"] == 1
+        assert per_coin["BTC"]["long"]["total_wallet_exposure_limit"] == pytest.approx(1.0)
+        assert per_coin["BTC"]["short"]["n_positions"] == 0
+        assert per_coin["BTC"]["short"]["total_wallet_exposure_limit"] == pytest.approx(0.0)
+        assert per_coin["BTC"]["short"]["wallet_exposure_limit"] == pytest.approx(0.0)
+
+        assert per_coin["ETH"]["short"]["n_positions"] == 1
+        assert per_coin["ETH"]["short"]["total_wallet_exposure_limit"] == pytest.approx(1.0)
+        assert per_coin["ETH"]["long"]["n_positions"] == 0
+        assert per_coin["ETH"]["long"]["total_wallet_exposure_limit"] == pytest.approx(0.0)
+        assert per_coin["ETH"]["long"]["wallet_exposure_limit"] == pytest.approx(0.0)
+
+    def test_build_payload_subsets_union_hlcvs_to_active_coin_order(self, monkeypatch):
+        config = self._make_config()
+        config["bot"]["short"]["n_positions"] = 0
+        config["bot"]["short"]["total_wallet_exposure_limit"] = 0.0
+        config["bot"]["short"]["wallet_exposure_limit"] = 0.0
+        # Simulate suite-runner feeding a union-coin dataset while side approvals reduce
+        # the active backtest coin list to the long-only BTC side.
+        hlcvs = np.zeros((4, 2, 4), dtype=float)
+        btc_prices = np.ones(4, dtype=float)
+        timestamps = np.arange(4, dtype=np.int64)
+        mss = {
+            **self._make_mss(),
+            "__meta__": {},
+        }
+        captured = {}
+
+        def _fake_bundle(hlcvs_arr, btc_arr, timestamps_arr, bundle_meta):
+            captured["shape"] = hlcvs_arr.shape
+            captured["coins"] = [entry["coin"] for entry in bundle_meta["coins"]]
+            captured["meta_indices"] = [entry["index"] for entry in bundle_meta["coins"]]
+            return object()
+
+        monkeypatch.setattr("backtest.pbr.HlcvsBundle", _fake_bundle)
+        payload = build_backtest_payload(
+            hlcvs,
+            mss,
+            config,
+            "binance",
+            btc_prices,
+            timestamps,
+            coin_indices=[0, 1],
+        )
+
+        assert payload.backtest_params["coins"] == ["BTC"]
+        assert captured["shape"] == (4, 1, 4)
+        assert captured["coins"] == ["BTC"]
+        assert captured["meta_indices"] == [0]

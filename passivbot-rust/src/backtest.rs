@@ -1654,12 +1654,24 @@ impl<'a> Backtest<'a> {
 
         // init bot params
         let configured_n_positions = EffectiveNPositions {
-            long: bot_params[0].long.n_positions,
-            short: bot_params[0].short.n_positions,
+            long: bot_params
+                .iter()
+                .map(|bp| bp.long.n_positions)
+                .fold(0usize, usize::max),
+            short: bot_params
+                .iter()
+                .map(|bp| bp.short.n_positions)
+                .fold(0usize, usize::max),
         };
         let mut bot_params_master = bot_params[0].clone();
-        bot_params_master.long.n_positions = n_coins.min(bot_params_master.long.n_positions);
-        bot_params_master.short.n_positions = n_coins.min(bot_params_master.short.n_positions);
+        if let Some(bp) = bot_params.iter().find(|bp| bp.long.n_positions > 0) {
+            bot_params_master.long = bp.long.clone();
+        }
+        if let Some(bp) = bot_params.iter().find(|bp| bp.short.n_positions > 0) {
+            bot_params_master.short = bp.short.clone();
+        }
+        bot_params_master.long.n_positions = n_coins.min(configured_n_positions.long);
+        bot_params_master.short.n_positions = n_coins.min(configured_n_positions.short);
 
         // Store original bot params to preserve dynamic WEL indicators
         let bot_params_original = bot_params.clone();

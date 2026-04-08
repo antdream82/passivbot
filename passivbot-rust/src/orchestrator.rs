@@ -416,6 +416,10 @@ mod core {
         bp.total_wallet_exposure_limit > 0.0 && bp.n_positions > 0
     }
 
+    fn is_symbol_pside_enabled(side: &SymbolSideInput) -> bool {
+        side.bot_params.total_wallet_exposure_limit > 0.0 && side.bot_params.n_positions > 0
+    }
+
     fn ema_lookup(map: &EmaBySpan, span: f64) -> Option<f64> {
         if !span.is_finite() {
             return None;
@@ -1034,7 +1038,8 @@ mod core {
                 .and_then(|flags| flags.get(s.symbol_idx))
                 .copied()
                 .unwrap_or(false);
-            let enabled = s.tradable
+            let enabled = is_symbol_pside_enabled(side)
+                && s.tradable
                 && !already_active
                 && one_way_allows_initial_slot(symbols, s.symbol_idx, pside, hedge_mode)
                 && can_open_initial
@@ -1776,8 +1781,10 @@ mod core {
                 } else {
                     // No position on either side - decide based on eligibility and EMA band distance
                     let long_enabled = enabled_long
+                        && is_symbol_pside_enabled(&s.long)
                         && should_generate_entries(effective_mode(s.long.mode, false), false, true);
                     let short_enabled = enabled_short
+                        && is_symbol_pside_enabled(&s.short)
                         && should_generate_entries(
                             effective_mode(s.short.mode, false),
                             false,
@@ -3347,6 +3354,55 @@ mod core {
                     sort_global: true,
                     global_bot_params: global_bp,
                     hedge_mode: false,
+                },
+                symbols: vec![sym0, sym1],
+                peek_hints: None,
+            };
+
+            let out = compute_ideal_orders(&input).unwrap();
+            let long_entry_symbol_idxs: Vec<usize> = out
+                .orders
+                .iter()
+                .filter(|o| o.pside == PositionSide::Long && !is_close_order_type(o.order_type))
+                .map(|o| o.symbol_idx)
+                .collect();
+            assert_eq!(long_entry_symbol_idxs, vec![1]);
+        }
+
+        #[test]
+        fn long_forager_skips_symbol_with_long_side_disabled() {
+            let mut sym0 = make_basic_symbol(0);
+            let mut sym1 = make_basic_symbol(1);
+
+            sym0.long.bot_params.total_wallet_exposure_limit = 0.0;
+            sym0.long.bot_params.n_positions = 0;
+            sym0.emas.m1.volume = vec![(10.0, 10.0)];
+            sym0.emas.m1.log_range = vec![(10.0, 10.0)];
+
+            sym1.emas.m1.volume = vec![(10.0, 5.0)];
+            sym1.emas.m1.log_range = vec![(10.0, 5.0)];
+
+            let mut global_bp = BotParamsPair::default();
+            global_bp.long.total_wallet_exposure_limit = 1.0;
+            global_bp.long.n_positions = 1;
+            global_bp.long.forager_volume_drop_pct = 0.0;
+
+            let input = OrchestratorInput {
+                balance: 1000.0,
+                balance_raw: 1000.0,
+                global: OrchestratorGlobal {
+                    filter_by_min_effective_cost: false,
+                    market_orders_allowed: false,
+                    market_order_near_touch_threshold: 0.001,
+                    panic_close_market: false,
+                    unstuck_allowance_long: 0.0,
+                    unstuck_allowance_short: 0.0,
+                    max_realized_loss_pct: 1.0,
+                    realized_pnl_cumsum_max: 0.0,
+                    realized_pnl_cumsum_last: 0.0,
+                    sort_global: true,
+                    global_bot_params: global_bp,
+                    hedge_mode: true,
                 },
                 symbols: vec![sym0, sym1],
                 peek_hints: None,

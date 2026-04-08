@@ -83,6 +83,8 @@ from utils import (
     format_end_date,
     format_approved_ignored_coins,
     date_to_ts,
+    trim_analysis_aliases,
+    symbol_to_coin,
 )
 from pure_funcs import (
     ts_to_date,
@@ -470,6 +472,30 @@ def build_backtest_payload(
     )
     backtest_params = dict(backtest_params)
     coins_order = backtest_params.get("coins", [])
+    mss_coins_order = [coin for coin in mss.keys() if coin != "__meta__"] if isinstance(mss, dict) else []
+
+    # Suite scenarios may prepare exchange datasets using the union of side-specific coins,
+    # while prep_backtest_args() can disable one side and reduce the active coin order.
+    # Align the OHLCV tensor to the active backtest coin order before building bundle metadata.
+    subset_positions = None
+    if coins_order and hlcvs.ndim >= 2 and hlcvs.shape[1] != len(coins_order):
+        if not mss_coins_order or hlcvs.shape[1] != len(mss_coins_order):
+            raise ValueError(
+                "Unable to align hlcvs coin dimension with active backtest coins: "
+                f"hlcvs has {hlcvs.shape[1]} coins, active order has {len(coins_order)}, "
+                f"metadata order has {len(mss_coins_order)}"
+            )
+        missing = [coin for coin in coins_order if coin not in mss_coins_order]
+        if missing:
+            raise ValueError(
+                f"Active backtest coins missing from metadata order for {exchange}: {missing}"
+            )
+        subset_positions = [mss_coins_order.index(coin) for coin in coins_order]
+        hlcvs = hlcvs[:, subset_positions, :]
+        # After materializing the active-coin subset locally, the Rust bundle should
+        # see the sliced tensor as canonical. Keep any original master-coin indices
+        # out of the second-stage bundle slicer to avoid double-subsetting.
+        coin_indices = None
 
     # Read candle interval from config (default to 1m)
     candle_interval = config.get("backtest", {}).get("candle_interval_minutes", 1)
@@ -1519,10 +1545,33 @@ def prep_backtest_args(
         config = compile_runtime_config(config, runtime="backtest", record_step=False)
     if execution_settings is None:
         execution_settings = get_backtest_execution_settings(config, is_runtime_compiled=True)
-    coins = sorted(set(require_config_value(config, f"backtest.coins.{exchange}")))
+    coins_cfg = get_optional_config_value(config, f"backtest.coins.{exchange}")
+    coins = sorted(set(coins_cfg if coins_cfg is not None else [k for k in mss if not k.startswith("__")]))
     candle_interval = int(config.get("backtest", {}).get("candle_interval_minutes", 1) or 1)
     bot_params_list = []
     bot_params_template = deepcopy(require_config_value(config, "bot"))
+    approved_cfg = get_optional_config_value(
+        config, "live.approved_coins", {"long": "all", "short": "all"}
+    )
+    ignored_cfg = get_optional_config_value(config, "live.ignored_coins", {"long": [], "short": []})
+
+    def _coin_allowed_for_pside(pside: str, coin: str) -> bool:
+        side_approved = approved_cfg.get(pside, []) if isinstance(approved_cfg, dict) else approved_cfg
+        side_ignored = ignored_cfg.get(pside, []) if isinstance(ignored_cfg, dict) else []
+        if side_approved == "all":
+            approved = True
+        elif isinstance(side_approved, (list, tuple, set)):
+            approved = coin in side_approved or symbol_to_coin(coin) in side_approved
+        else:
+            approved = False
+        if not approved:
+            return False
+        if isinstance(side_ignored, (list, tuple, set)):
+            if coin in side_ignored or symbol_to_coin(coin) in side_ignored:
+                return False
+        return True
+
+    filtered_coins = []
     for coin in coins:
         coin_specific_bot_params = deepcopy(bot_params_template)
         if coin in config.get("coin_overrides", {}):
@@ -1536,11 +1585,30 @@ def prep_backtest_args(
                     == "normal"
                 )
         for pside in ["long", "short"]:
-            if "wallet_exposure_limit" not in config["coin_overrides"].get(coin, {}).get(
+            side_allowed = _coin_allowed_for_pside(pside, coin)
+            if not side_allowed:
+                # Preserve the union coin universe for shared data preparation, but ensure a
+                # side never opens positions on coins outside its approved set.
+                coin_specific_bot_params[pside]["n_positions"] = 0.0
+                coin_specific_bot_params[pside]["total_wallet_exposure_limit"] = 0.0
+                coin_specific_bot_params[pside]["wallet_exposure_limit"] = 0.0
+                coin_specific_bot_params[pside]["is_forced_active"] = False
+            if side_allowed and "wallet_exposure_limit" not in config["coin_overrides"].get(coin, {}).get(
                 "bot", {}
             ).get(pside, {}):
                 coin_specific_bot_params[pside]["wallet_exposure_limit"] = -1.0
-        bot_params_list.append(coin_specific_bot_params)
+        long_active = (
+            coin_specific_bot_params["long"].get("n_positions", 0.0) > 0.0
+            and coin_specific_bot_params["long"].get("total_wallet_exposure_limit", 0.0) > 0.0
+        )
+        short_active = (
+            coin_specific_bot_params["short"].get("n_positions", 0.0) > 0.0
+            and coin_specific_bot_params["short"].get("total_wallet_exposure_limit", 0.0) > 0.0
+        )
+        if long_active or short_active:
+            filtered_coins.append(coin)
+            bot_params_list.append(coin_specific_bot_params)
+    coins = filtered_coins
     if exchange_params is None:
         exchange_params = [
             {

@@ -7,6 +7,7 @@ from typing import Sequence
 from config.bot import normalize_forager_score_weights
 from optimizer_overrides import optimizer_overrides
 from optimization.config_adapter import extract_bounds_tuple_list_from_config, get_optimization_key_paths
+from optimization.bounds import Bound
 from warmup_utils import compute_per_coin_warmup_minutes
 
 
@@ -64,8 +65,26 @@ def build_optimizer_vector_config(
         pside_cfg = config.get("bot", {}).get(pside, {})
         if not isinstance(pside_cfg, dict) or "forager_score_weights" not in pside_cfg:
             continue
+        weights = pside_cfg["forager_score_weights"]
+        optimize_bounds = config.get("optimize", {}).get("bounds", {})
+        if (
+            isinstance(weights, dict)
+            and all(float(weights.get(k, 0.0)) == 0.0 for k in ("volume", "ema_readiness", "volatility"))
+        ):
+            weight_bound_keys = [
+                f"{pside}_forager_score_weights_volume",
+                f"{pside}_forager_score_weights_ema_readiness",
+                f"{pside}_forager_score_weights_volatility",
+            ]
+            if all(
+                key in optimize_bounds
+                and (bound := Bound.from_config(key, optimize_bounds[key])).low == 0.0
+                and bound.high == 0.0
+                for key in weight_bound_keys
+            ):
+                continue
         pside_cfg["forager_score_weights"] = normalize_forager_score_weights(
-            pside_cfg["forager_score_weights"],
+            weights,
             path=f"bot.{pside}.forager_score_weights",
         )
     return config
