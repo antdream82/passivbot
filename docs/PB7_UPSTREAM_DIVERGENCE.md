@@ -152,6 +152,108 @@ Start from `upstream/master`, then restore the following divergence packages:
 - Starting-config compatibility matters because PBGUI and historical optimize
   outputs are used as seeds in production.
 
+### Critical regression: unstuck allowance must stay cumulative
+
+This is one of the highest-risk behavior differences in the current rebase.
+
+#### What changed upstream
+
+Upstream commit `fa6947a7` introduced rolling / effective realized-PnL handling
+for HSL and risk logic. That part is reasonable for recent-risk gating, but the
+same effective/rolling PnL path was also applied to auto-unstuck allowance in:
+
+- [passivbot-rust/src/backtest.rs](/app/pb7/passivbot-rust/src/backtest.rs)
+- [src/passivbot.py](/app/pb7/src/passivbot.py)
+
+The affected paths were:
+
+- Rust backtest unstuck allowance used by direct backtest order logic
+- Rust orchestrator input `unstuck_allowance_long/short`
+- Live Python `_calc_unstuck_allowances()`
+- Live Python `_calc_unstuck_allowance_for_logging()`
+
+#### Why that is a regression
+
+`unstuck` is position-management logic, not recent-risk gating.
+
+Using a rolling lookback window for unstuck allowance makes the bot "forget"
+older realized profits that historically acted as buffer for controlled
+de-risking. In practice this reduces `close_unstuck_*` size, changes the next
+entry path, and can turn a historically profitable config into an early
+liquidation path.
+
+This was reproduced on a historical one-coin config, so the issue is not
+explained by forager selection or multi-coin ranking.
+
+Reference config:
+
+- [config.json](/app/pb7/backtests/pbgui/xyz_trailing_new8/suite_runs/2026-04-04T12_54_21/base/hyperliquid/2026-04-04T12_54_26/config.json)
+
+Stored historical `base` result:
+
+- `adg_usd = 0.0018088215516034456`
+- `gain_usd = 149.29282756104152`
+- `drawdown_worst_usd = 0.4244738513871256`
+- `liquidated = None`
+
+Current rebased engine before the fix produced:
+
+- `adg_usd ~= -3.368e-05`
+- `gain_usd ~= 0.9545`
+- `drawdown_worst_usd ~= 0.9978`
+- `liquidated = True`
+
+The first concrete path divergence appeared very early in fills:
+
+- old path: `2018-12-26 17:02:00 close_unstuck_long -0.9516`
+- bad rebased path: `2018-12-26 17:02:00 close_unstuck_long -0.4112`
+
+That smaller unstuck close immediately changed subsequent entry sizing and led
+to a completely different position path.
+
+#### Required behavior
+
+Keep the semantics split:
+
+- `HSL` / recent realized-loss gating:
+  use rolling / lookback-aware realized PnL
+- `unstuck allowance`:
+  use full cumulative realized PnL history
+
+In other words:
+
+- keep `effective_pnl_cumsum()` for HSL-oriented logic
+- do **not** use it for unstuck allowance
+- add a separate cumulative helper for unstuck allowance if needed
+
+#### Implementation rule
+
+If upstream is rebased again, ensure the following remain true:
+
+1. In Rust backtest, unstuck allowance uses cumulative
+   `pnl_cumsum_max / pnl_cumsum_running`, not `effective_pnl_cumsum()`.
+2. In Rust orchestrator input construction, `global.unstuck_allowance_*` also
+   uses cumulative realized PnL.
+3. In live Python, `_calc_unstuck_allowances()` uses full
+   `self._pnls_manager.get_events()` history, not `_get_effective_pnl_events()`.
+4. In live Python, `_calc_unstuck_allowance_for_logging()` uses full event
+   history too, so the logged allowance matches the live unstuck semantics.
+
+#### Validation
+
+Minimum validation for this regression:
+
+1. Rebuild Rust:
+   `cd /app/pb7/passivbot-rust && VIRTUAL_ENV=/venv_pb7 PATH=/venv_pb7/bin:$PATH maturin develop --release`
+2. Run:
+   `cd /app/pb7 && /venv_pb7/bin/pytest tests/test_passivbot_balance_split.py -q`
+3. Re-run the historical suite config above and confirm the `base` result
+   returns to the historical behavior band:
+   - `adg_usd` positive
+   - `gain_usd` near `149.29`
+   - `drawdown_worst_usd` near `0.424`
+   - `liquidated = False`
+
 ## Package 4: Runtime Environment And Downloader Compatibility
 
 ### Files

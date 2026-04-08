@@ -765,7 +765,7 @@ impl<'a> Backtest<'a> {
 
         let balance = self.balance.usd_total_balance_rounded;
         let balance_raw = self.balance.usd_total_balance;
-        let (effective_cumsum_max, effective_cumsum_last) = self.effective_pnl_cumsum(k);
+        let (unstuck_cumsum_max, unstuck_cumsum_last) = self.unstuck_pnl_cumsum();
         let allowance = match side {
             LONG => {
                 if self.bot_params_master.long.unstuck_loss_allowance_pct > 0.0 {
@@ -773,8 +773,8 @@ impl<'a> Backtest<'a> {
                         balance_raw,
                         self.bot_params_master.long.unstuck_loss_allowance_pct
                             * self.bot_params_master.long.total_wallet_exposure_limit,
-                        effective_cumsum_max,
-                        effective_cumsum_last,
+                        unstuck_cumsum_max,
+                        unstuck_cumsum_last,
                     )
                 } else {
                     0.0
@@ -786,8 +786,8 @@ impl<'a> Backtest<'a> {
                         balance_raw,
                         self.bot_params_master.short.unstuck_loss_allowance_pct
                             * self.bot_params_master.short.total_wallet_exposure_limit,
-                        effective_cumsum_max,
-                        effective_cumsum_last,
+                        unstuck_cumsum_max,
+                        unstuck_cumsum_last,
                     )
                 } else {
                     0.0
@@ -1002,14 +1002,15 @@ impl<'a> Backtest<'a> {
         let balance = self.balance.usd_total_balance_rounded;
         let balance_raw = self.balance.usd_total_balance;
         let (effective_cumsum_max, effective_cumsum_last) = self.effective_pnl_cumsum(k);
+        let (unstuck_cumsum_max, unstuck_cumsum_last) = self.unstuck_pnl_cumsum();
 
         let long_allowance = if self.bot_params_master.long.unstuck_loss_allowance_pct > 0.0 {
             calc_auto_unstuck_allowance(
                 balance_raw,
                 self.bot_params_master.long.unstuck_loss_allowance_pct
                     * self.bot_params_master.long.total_wallet_exposure_limit,
-                effective_cumsum_max,
-                effective_cumsum_last,
+                unstuck_cumsum_max,
+                unstuck_cumsum_last,
             )
         } else {
             0.0
@@ -1019,8 +1020,8 @@ impl<'a> Backtest<'a> {
                 balance_raw,
                 self.bot_params_master.short.unstuck_loss_allowance_pct
                     * self.bot_params_master.short.total_wallet_exposure_limit,
-                effective_cumsum_max,
-                effective_cumsum_last,
+                unstuck_cumsum_max,
+                unstuck_cumsum_last,
             )
         } else {
             0.0
@@ -1276,14 +1277,15 @@ impl<'a> Backtest<'a> {
 
         let balance_raw = input.balance_raw;
         let (effective_cumsum_max, effective_cumsum_last) = self.effective_pnl_cumsum(k);
+        let (unstuck_cumsum_max, unstuck_cumsum_last) = self.unstuck_pnl_cumsum();
         input.global.unstuck_allowance_long =
             if self.bot_params_master.long.unstuck_loss_allowance_pct > 0.0 {
                 calc_auto_unstuck_allowance(
                     balance_raw,
                     self.bot_params_master.long.unstuck_loss_allowance_pct
                         * self.bot_params_master.long.total_wallet_exposure_limit,
-                    effective_cumsum_max,
-                    effective_cumsum_last,
+                    unstuck_cumsum_max,
+                    unstuck_cumsum_last,
                 )
             } else {
                 0.0
@@ -1294,8 +1296,8 @@ impl<'a> Backtest<'a> {
                     balance_raw,
                     self.bot_params_master.short.unstuck_loss_allowance_pct
                         * self.bot_params_master.short.total_wallet_exposure_limit,
-                    effective_cumsum_max,
-                    effective_cumsum_last,
+                    unstuck_cumsum_max,
+                    unstuck_cumsum_last,
                 )
             } else {
                 0.0
@@ -2365,6 +2367,14 @@ impl<'a> Backtest<'a> {
             let rolling_current = self.pnl_cumsum_running - base_abs_cumsum;
             return (rolling_peak, rolling_current);
         }
+        (self.pnl_cumsum_max, self.pnl_cumsum_running)
+    }
+
+    #[inline]
+    fn unstuck_pnl_cumsum(&self) -> (f64, f64) {
+        // Keep unstuck allowance tied to full realized PnL history. Rolling lookback is
+        // appropriate for HSL/recent risk gating, but shrinking unstuck allowance to a
+        // recent window materially changes legacy position-management behavior.
         (self.pnl_cumsum_max, self.pnl_cumsum_running)
     }
 
@@ -6854,6 +6864,36 @@ mod tests {
         );
     }
 
+    fn record_realized_pnl_for_test(bt: &mut Backtest, k: usize, pnl: f64) {
+        bt.pnl_cumsum_running += pnl;
+        bt.pnl_cumsum_max = bt.pnl_cumsum_max.max(bt.pnl_cumsum_running);
+        bt.record_rolling_pnl(k, pnl);
+    }
+
+    fn naive_live_style_effective_pnl_cumsum(
+        events: &[(usize, f64)],
+        k: usize,
+        lookback_bars: usize,
+    ) -> (f64, f64) {
+        let active: Vec<f64> = events
+            .iter()
+            .filter(|(event_k, _)| {
+                lookback_bars == usize::MAX || k.saturating_sub(*event_k) <= lookback_bars
+            })
+            .map(|(_, pnl)| *pnl)
+            .collect();
+        if active.is_empty() {
+            return (0.0, 0.0);
+        }
+        let mut cumsum = 0.0;
+        let mut peak = f64::NEG_INFINITY;
+        for pnl in active {
+            cumsum += pnl;
+            peak = peak.max(cumsum);
+        }
+        (peak, cumsum)
+    }
+
     #[test]
     fn rolling_effective_pnl_cumsum_uses_true_window_and_expires_without_new_fills() {
         let hlcvs = Array3::from_shape_vec((4, 1, 4), vec![1.0; 4 * 1 * 4]).unwrap();
@@ -6885,7 +6925,7 @@ mod tests {
             dynamic_wel_by_tradability: true,
             hedge_mode: true,
             max_realized_loss_pct: 1.0,
-            pnls_max_lookback_days: 1.0,
+            pnls_max_lookback_days: 2.0,
             liquidation_threshold: 0.05,
             equity_hard_stop_loss: EquityHardStopLossConfig::default(),
             market_orders_allowed: false,
@@ -6910,14 +6950,8 @@ mod tests {
         assert!((current1 - 10.0).abs() < 1e-12);
 
         let (peak2, current2) = bt.effective_pnl_cumsum(2);
-        assert!(
-            (peak2 - -90.0).abs() < 1e-12,
-            "expected stale positive peak to expire from 1-bar window"
-        );
-        assert!(
-            (current2 - -90.0).abs() < 1e-12,
-            "expected only the k=1 fill to remain active at k=2"
-        );
+        assert!((peak2 - -90.0).abs() < 1e-12);
+        assert!((current2 - -90.0).abs() < 1e-12);
 
         let (peak3, current3) = bt.effective_pnl_cumsum(3);
         assert!(
@@ -6927,14 +6961,14 @@ mod tests {
     }
 
     #[test]
-    fn rolling_pnl_window_expiry_restores_unstuck_allowance_after_stale_peak_ages_out() {
-        let hlcvs = Array3::from_shape_vec((4, 1, 4), vec![1.0; 4 * 1 * 4]).unwrap();
-        let btc_usd_prices = Array1::from_vec(vec![20_000.0; 4]);
+    fn unstuck_allowance_ignores_rolling_pnl_lookback() {
+        let hlcvs = Array3::from_shape_vec((2, 1, 4), vec![1.0; 2 * 1 * 4]).unwrap();
+        let btc_usd_prices = Array1::from_vec(vec![20_000.0, 20_000.0]);
 
         let mut bp_pair = BotParamsPair::default();
         bp_pair.long.n_positions = 1;
-        bp_pair.long.total_wallet_exposure_limit = 1.0;
-        bp_pair.long.unstuck_loss_allowance_pct = 0.02;
+        bp_pair.long.total_wallet_exposure_limit = 0.5;
+        bp_pair.long.unstuck_loss_allowance_pct = 0.2;
         bp_pair.long.ema_span_0 = 10.0;
         bp_pair.long.ema_span_1 = 20.0;
 
@@ -6947,7 +6981,7 @@ mod tests {
             first_timestamp_ms: 0,
             requested_start_timestamp_ms: 0,
             first_valid_indices: vec![0],
-            last_valid_indices: vec![3],
+            last_valid_indices: vec![1],
             warmup_minutes: vec![0],
             trade_start_indices: vec![0],
             global_warmup_bars: 0,
@@ -6955,16 +6989,10 @@ mod tests {
             btc_collateral_ltv_cap: None,
             metrics_only: true,
             filter_by_min_effective_cost: false,
-            dynamic_wel_by_tradability: true,
             hedge_mode: true,
             max_realized_loss_pct: 1.0,
-            pnls_max_lookback_days: 1.0,
-            liquidation_threshold: 0.05,
-            equity_hard_stop_loss: EquityHardStopLossConfig::default(),
-            market_orders_allowed: false,
-            market_order_near_touch_threshold: 0.001,
-            market_order_slippage_pct: 0.0005,
-            candle_interval_minutes: 24 * 60,
+            candle_interval_minutes: 1,
+            ..Default::default()
         };
 
         let mut bt = Backtest::new(
@@ -6977,213 +7005,23 @@ mod tests {
 
         bt.balance.usd_total_balance = 1000.0;
         bt.balance.usd_total_balance_rounded = 1000.0;
+        bt.pnl_cumsum_max = 100.0;
+        bt.pnl_cumsum_running = 30.0;
+        bt.pnl_lookback_bars = 1;
+        bt.rolling_pnl_cumsum_max = 10.0;
+        bt.rolling_pnl_cumsum = 5.0;
 
-        record_realized_pnl_for_test(&mut bt, 0, 100.0);
-        record_realized_pnl_for_test(&mut bt, 1, -90.0);
-
-        let input1 = bt.get_orchestrator_input_cached(1, None);
+        let input = bt.get_orchestrator_input_cached(1, None);
+        let allowance_pct = 0.2 * 0.5;
+        let expected_full = calc_auto_unstuck_allowance(1000.0, allowance_pct, 100.0, 30.0);
+        let expected_rolling = calc_auto_unstuck_allowance(1000.0, allowance_pct, 10.0, 5.0);
         assert!(
-            input1.global.unstuck_allowance_long.abs() < 1e-12,
-            "expected stale positive peak to suppress allowance while still in-window"
-        );
-
-        let input2 = bt.get_orchestrator_input_cached(2, None);
-        assert!(
-            (input2.global.realized_pnl_cumsum_max - -90.0).abs() < 1e-12,
-            "expected rolling peak to decay after the old positive fill expires"
-        );
-        assert!(
-            (input2.global.realized_pnl_cumsum_last - -90.0).abs() < 1e-12,
-            "expected rolling current pnl to keep only the still-active fill"
+            (input.global.unstuck_allowance_long - expected_full).abs() < 1e-12,
+            "unstuck allowance should use full realized pnl history"
         );
         assert!(
-            (input2.global.unstuck_allowance_long - 20.0).abs() < 1e-12,
-            "expected allowance to recover once the stale peak ages out"
-        );
-    }
-
-    fn naive_live_style_effective_pnl_cumsum(
-        events: &[(usize, f64)],
-        k: usize,
-        lookback_bars: usize,
-    ) -> (f64, f64) {
-        let active: Vec<f64> = events
-            .iter()
-            .filter(|(event_k, _)| {
-                lookback_bars == usize::MAX || k.saturating_sub(*event_k) <= lookback_bars
-            })
-            .map(|(_, pnl)| *pnl)
-            .collect();
-        if active.is_empty() {
-            return (0.0, 0.0);
-        }
-        let mut cumsum = 0.0;
-        let mut peak = f64::NEG_INFINITY;
-        for pnl in active {
-            cumsum += pnl;
-            peak = peak.max(cumsum);
-        }
-        (peak, cumsum)
-    }
-
-    fn record_realized_pnl_for_test(bt: &mut Backtest, k: usize, pnl: f64) {
-        bt.pnl_cumsum_running += pnl;
-        bt.pnl_cumsum_max = bt.pnl_cumsum_max.max(bt.pnl_cumsum_running);
-        bt.record_rolling_pnl(k, pnl);
-    }
-
-    #[test]
-    fn rolling_effective_pnl_cumsum_keeps_peak_at_or_above_current_after_window_slide() {
-        let hlcvs = Array3::from_shape_vec((4, 1, 4), vec![1.0; 4 * 1 * 4]).unwrap();
-        let btc_usd_prices = Array1::from_vec(vec![20_000.0; 4]);
-
-        let mut bp_pair = BotParamsPair::default();
-        bp_pair.long.n_positions = 1;
-        bp_pair.long.total_wallet_exposure_limit = 1.0;
-        bp_pair.long.ema_span_0 = 10.0;
-        bp_pair.long.ema_span_1 = 20.0;
-
-        let backtest_params = BacktestParams {
-            starting_balance: 1000.0,
-            maker_fee: 0.0,
-            taker_fee: 0.00055,
-            coins: vec!["TEST".to_string()],
-            active_coin_indices: None,
-            first_timestamp_ms: 0,
-            requested_start_timestamp_ms: 0,
-            first_valid_indices: vec![0],
-            last_valid_indices: vec![3],
-            warmup_minutes: vec![0],
-            trade_start_indices: vec![0],
-            global_warmup_bars: 0,
-            btc_collateral_cap: 0.0,
-            btc_collateral_ltv_cap: None,
-            metrics_only: true,
-            filter_by_min_effective_cost: false,
-            dynamic_wel_by_tradability: true,
-            hedge_mode: true,
-            max_realized_loss_pct: 1.0,
-            pnls_max_lookback_days: 2.0,
-            liquidation_threshold: 0.05,
-            equity_hard_stop_loss: EquityHardStopLossConfig::default(),
-            market_orders_allowed: false,
-            market_order_near_touch_threshold: 0.001,
-            market_order_slippage_pct: 0.0005,
-            candle_interval_minutes: 24 * 60,
-        };
-
-        let mut bt = Backtest::new(
-            hlcvs.view(),
-            btc_usd_prices.view(),
-            vec![bp_pair],
-            vec![ExchangeParams::default()],
-            &backtest_params,
-        );
-
-        // True in-window sequence at k=3 with a 2-bar lookback:
-        // k=1: +50
-        // k=2: -120
-        // k=3: +190
-        // current rolling pnl = 120, and the in-window peak should also be 120.
-        record_realized_pnl_for_test(&mut bt, 0, 100.0);
-        record_realized_pnl_for_test(&mut bt, 1, 50.0);
-        record_realized_pnl_for_test(&mut bt, 2, -120.0);
-        record_realized_pnl_for_test(&mut bt, 3, 190.0);
-
-        let (peak, current) = bt.effective_pnl_cumsum(3);
-
-        assert!(
-            peak >= current - 1e-12,
-            "rolling peak must never fall below current rolling pnl: peak={}, current={}",
-            peak,
-            current
-        );
-        assert!(
-            (peak - 120.0).abs() < 1e-12,
-            "expected in-window rolling peak to track the later high after the old base expired"
-        );
-        assert!(
-            (current - 120.0).abs() < 1e-12,
-            "expected in-window rolling current pnl to equal the surviving 3-event sum"
-        );
-    }
-
-    #[test]
-    fn rolling_pnl_rebase_bug_does_not_inflate_unstuck_allowance() {
-        let hlcvs = Array3::from_shape_vec((4, 1, 4), vec![1.0; 4 * 1 * 4]).unwrap();
-        let btc_usd_prices = Array1::from_vec(vec![20_000.0; 4]);
-
-        let mut bp_pair = BotParamsPair::default();
-        bp_pair.long.n_positions = 1;
-        bp_pair.long.total_wallet_exposure_limit = 1.0;
-        bp_pair.long.unstuck_loss_allowance_pct = 0.01;
-        bp_pair.long.ema_span_0 = 10.0;
-        bp_pair.long.ema_span_1 = 20.0;
-
-        let backtest_params = BacktestParams {
-            starting_balance: 1000.0,
-            maker_fee: 0.0,
-            taker_fee: 0.00055,
-            coins: vec!["TEST".to_string()],
-            active_coin_indices: None,
-            first_timestamp_ms: 0,
-            requested_start_timestamp_ms: 0,
-            first_valid_indices: vec![0],
-            last_valid_indices: vec![3],
-            warmup_minutes: vec![0],
-            trade_start_indices: vec![0],
-            global_warmup_bars: 0,
-            btc_collateral_cap: 0.0,
-            btc_collateral_ltv_cap: None,
-            metrics_only: true,
-            filter_by_min_effective_cost: false,
-            dynamic_wel_by_tradability: true,
-            hedge_mode: true,
-            max_realized_loss_pct: 1.0,
-            pnls_max_lookback_days: 2.0,
-            liquidation_threshold: 0.05,
-            equity_hard_stop_loss: EquityHardStopLossConfig::default(),
-            market_orders_allowed: false,
-            market_order_near_touch_threshold: 0.001,
-            market_order_slippage_pct: 0.0005,
-            candle_interval_minutes: 24 * 60,
-        };
-
-        let mut bt = Backtest::new(
-            hlcvs.view(),
-            btc_usd_prices.view(),
-            vec![bp_pair],
-            vec![ExchangeParams::default()],
-            &backtest_params,
-        );
-
-        bt.balance.usd_total_balance = 1000.0;
-        bt.balance.usd_total_balance_rounded = 1000.0;
-
-        record_realized_pnl_for_test(&mut bt, 0, 100.0);
-        record_realized_pnl_for_test(&mut bt, 1, 50.0);
-        record_realized_pnl_for_test(&mut bt, 2, -120.0);
-        record_realized_pnl_for_test(&mut bt, 3, 190.0);
-
-        let input = bt.get_orchestrator_input_cached(3, None);
-
-        assert!(
-            input.global.realized_pnl_cumsum_max >= input.global.realized_pnl_cumsum_last - 1e-12,
-            "realized pnl peak must not be below current: peak={}, current={}",
-            input.global.realized_pnl_cumsum_max,
-            input.global.realized_pnl_cumsum_last
-        );
-        assert!(
-            (input.global.realized_pnl_cumsum_max - 120.0).abs() < 1e-12,
-            "expected current window peak to equal the current rolling pnl at the new high"
-        );
-        assert!(
-            (input.global.realized_pnl_cumsum_last - 120.0).abs() < 1e-12,
-            "expected current rolling pnl to equal the surviving 3-event sum"
-        );
-        assert!(
-            (input.global.unstuck_allowance_long - 10.0).abs() < 1e-12,
-            "expected allowance to remain anchored to balance when current rolling pnl is at the window peak"
+            (input.global.unstuck_allowance_long - expected_rolling).abs() > 1e-9,
+            "unstuck allowance should not use rolling pnl lookback"
         );
     }
 
@@ -7259,14 +7097,6 @@ mod tests {
                 k,
                 expected,
                 actual
-            );
-            let input = bt.get_orchestrator_input_cached(k, None);
-            let expected_allowance =
-                calc_auto_unstuck_allowance(1000.0, 0.01, expected.0, expected.1);
-            assert!(
-                (input.global.unstuck_allowance_long - expected_allowance).abs() < 1e-12,
-                "expected unstuck allowance at k={} to match live-style reference",
-                k
             );
         }
     }

@@ -498,7 +498,7 @@ def test_unstuck_allowance_routes_raw_balance_to_rust(monkeypatch):
     assert calls[0][0] == pytest.approx(200.0)  # raw balance
 
 
-def test_unstuck_allowance_uses_only_configured_pnl_lookback(monkeypatch):
+def test_unstuck_allowance_uses_full_history_even_when_lookback_is_configured(monkeypatch):
     import passivbot as pb_mod
 
     now_ms = 10 * 86_400_000
@@ -541,7 +541,9 @@ def test_unstuck_allowance_uses_only_configured_pnl_lookback(monkeypatch):
 
     assert out["long"] == pytest.approx(10.0)
     assert len(calls) == 1
-    assert calls[0] == pytest.approx((1000.0, 0.01, 10.0, 10.0))
+    # Unstuck allowance intentionally uses full realized PnL history, not the rolling
+    # lookback window reserved for HSL/recent risk gating.
+    assert calls[0] == pytest.approx((1000.0, 0.01, 100.0, 30.0))
 
 
 @pytest.mark.asyncio
@@ -738,7 +740,7 @@ def test_unstuck_logging_peak_stays_stable_when_profit_updates_both_balance_and_
     assert info_b["peak"] == pytest.approx(200.0)
 
 
-def test_unstuck_logging_uses_only_configured_pnl_lookback():
+def test_unstuck_logging_uses_full_history_even_when_lookback_is_configured():
     now_ms = 10 * 86_400_000
     bot = Passivbot.__new__(Passivbot)
     bot.balance = 1000.0
@@ -768,9 +770,9 @@ def test_unstuck_logging_uses_only_configured_pnl_lookback():
     info = bot._calc_unstuck_allowance_for_logging("long")
 
     assert info["status"] == "ok"
-    assert info["peak"] == pytest.approx(1000.0)
-    assert info["pct_from_peak"] == pytest.approx(0.0)
-    assert info["allowance"] == pytest.approx(10.0)
+    assert info["peak"] == pytest.approx(1070.0)
+    assert info["pct_from_peak"] == pytest.approx((1000.0 / 1070.0 - 1.0) * 100.0)
+    assert info["allowance"] == pytest.approx(-59.3)
 
 
 @pytest.mark.asyncio
