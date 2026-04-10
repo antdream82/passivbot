@@ -122,8 +122,6 @@ PLOT_GROUP_ALL = PLOT_GROUP_SUMMARY | {"coin_fills"}
 HLCVS_CACHE_ROOT = Path("caches") / "hlcvs_data"
 HLCVS_CACHE_HASH_LEN = 16
 HLCVS_CACHE_DIR_SEP = "__"
-
-
 @dataclass(frozen=True)
 class BacktestPlotContext:
     hlcvs: np.ndarray | None = None

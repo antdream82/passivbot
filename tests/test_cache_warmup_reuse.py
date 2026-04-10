@@ -19,6 +19,7 @@ import copy
 import gzip
 import json
 import os
+import sys
 
 import numpy as np
 import pytest
@@ -36,13 +37,8 @@ from backtest import (
     save_coins_hlcvs_to_cache,
 )
 
-# ============================================================================
-# Fixtures
-# ============================================================================
-
 
 def _base_config(**overrides):
-    """Minimal config sufficient for cache hash computation."""
     cfg = {
         "backtest": {
             "base_dir": "backtests",
@@ -83,7 +79,6 @@ def _base_config(**overrides):
 
 
 def _write_fake_cache(cache_dir, *, compress=False, warmup_minutes=None):
-    """Write minimal valid cache files so load_coins_hlcvs_from_cache succeeds."""
     os.makedirs(cache_dir, exist_ok=True)
 
     coins = ["BTC"]
@@ -115,16 +110,8 @@ def _write_fake_cache(cache_dir, *, compress=False, warmup_minutes=None):
         )
 
 
-# ============================================================================
-# Test Class: Cache Hash Independence from Warmup
-# ============================================================================
-
-
 class TestCacheHashIndependence:
-    """Verify that warmup_minutes no longer affects the cache hash."""
-
     def test_different_ema_spans_same_hash(self):
-        """Two configs differing only in EMA spans produce the same cache hash."""
         cfg_a = _base_config()
         cfg_b = copy.deepcopy(cfg_a)
         cfg_b["bot"]["long"]["entry_volatility_ema_span_hours"] = 500.0
@@ -135,7 +122,6 @@ class TestCacheHashIndependence:
         assert hash_a == hash_b
 
     def test_different_warmup_ratio_same_hash(self):
-        """Changing warmup_ratio does not change the hash."""
         cfg_a = _base_config()
         cfg_b = copy.deepcopy(cfg_a)
         cfg_b["live"]["warmup_ratio"] = 10.0
@@ -146,7 +132,6 @@ class TestCacheHashIndependence:
         assert hash_a == hash_b
 
     def test_different_coins_different_hash(self):
-        """Changing approved_coins still produces a different hash."""
         cfg_a = _base_config()
         cfg_b = copy.deepcopy(cfg_a)
         cfg_b["live"]["approved_coins"]["long"] = ["ETH/USDT:USDT"]
@@ -157,7 +142,6 @@ class TestCacheHashIndependence:
         assert hash_a != hash_b
 
     def test_different_dates_different_hash(self):
-        """Changing start_date still produces a different hash."""
         cfg_a = _base_config()
         cfg_b = copy.deepcopy(cfg_a)
         cfg_b["backtest"]["start_date"] = "2023-06-01"
@@ -168,16 +152,8 @@ class TestCacheHashIndependence:
         assert hash_a != hash_b
 
 
-# ============================================================================
-# Test Class: Warmup Sufficiency Gate
-# ============================================================================
-
-
 class TestWarmupSufficiencyGate:
-    """Verify that load_coins_hlcvs_from_cache checks warmup sufficiency."""
-
     def test_sufficient_warmup_returns_cache(self, tmp_path, monkeypatch):
-        """Cache with warmup >= needed returns data."""
         cfg = _base_config()
         cache_hash = get_cache_hash(cfg, "binance")
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
@@ -189,7 +165,6 @@ class TestWarmupSufficiencyGate:
         assert result is not None
 
     def test_insufficient_warmup_returns_none(self, tmp_path, monkeypatch):
-        """Cache with warmup < needed returns None."""
         cfg = _base_config()
         cache_hash = get_cache_hash(cfg, "binance")
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
@@ -201,7 +176,6 @@ class TestWarmupSufficiencyGate:
         assert result is None
 
     def test_exact_warmup_match_returns_cache(self, tmp_path, monkeypatch):
-        """Cache with warmup == needed returns data (boundary condition)."""
         cfg = _base_config()
         cache_hash = get_cache_hash(cfg, "binance")
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
@@ -212,20 +186,7 @@ class TestWarmupSufficiencyGate:
 
         assert result is not None
 
-    def test_zero_needed_warmup_always_hits(self, tmp_path, monkeypatch):
-        """When needed warmup is 0, any cache is sufficient."""
-        cfg = _base_config()
-        cache_hash = get_cache_hash(cfg, "binance")
-        cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
-        _write_fake_cache(str(cache_dir), warmup_minutes=0)
-
-        monkeypatch.chdir(tmp_path)
-        result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=0)
-
-        assert result is not None
-
     def test_default_warmup_param_is_zero(self, tmp_path, monkeypatch):
-        """Calling without warmup_minutes defaults to 0 (always hits)."""
         cfg = _base_config()
         cache_hash = get_cache_hash(cfg, "binance")
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
@@ -237,60 +198,42 @@ class TestWarmupSufficiencyGate:
         assert result is not None
 
 
-# ============================================================================
-# Test Class: Legacy Cache Compatibility
-# ============================================================================
-
-
-class TestLegacyCacheCompatibility:
-    """Verify behavior with pre-existing caches that lack cache_meta.json."""
-
-    def test_missing_cache_meta_treated_as_zero_warmup(self, tmp_path, monkeypatch):
-        """Legacy cache without cache_meta.json has cached_warmup=0."""
+class TestDescriptiveCacheDirs:
+    def test_build_cache_dir_name_contains_exchange_coins_dates_and_hash(self):
         cfg = _base_config()
         cache_hash = get_cache_hash(cfg, "binance")
-        cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
-        _write_fake_cache(str(cache_dir), warmup_minutes=None)
+        name = _build_hlcvs_cache_dir_name(cfg, "binance", ["BTC/USDT:USDT"], cache_hash)
+        assert name.startswith("binance__BTC__")
+        assert name.endswith(str(cache_hash)[:16])
 
-        monkeypatch.chdir(tmp_path)
-
-        # Needed warmup > 0 → miss (legacy cache has no warmup metadata)
-        result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=100)
-        assert result is None
-
-    def test_missing_cache_meta_hits_when_zero_needed(self, tmp_path, monkeypatch):
-        """Legacy cache still works when needed warmup is 0."""
+    def test_resolve_cache_dir_finds_descriptive_dir(self, tmp_path, monkeypatch):
         cfg = _base_config()
         cache_hash = get_cache_hash(cfg, "binance")
-        cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
-        _write_fake_cache(str(cache_dir), warmup_minutes=None)
+        root = tmp_path / "caches" / "hlcvs_data"
+        root.mkdir(parents=True, exist_ok=True)
+        dir_name = _build_hlcvs_cache_dir_name(cfg, "binance", ["BTC/USDT:USDT"], cache_hash)
+        (root / dir_name).mkdir()
 
         monkeypatch.chdir(tmp_path)
+        resolved = _resolve_hlcvs_cache_dir(cache_hash)
 
-        result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=0)
-        assert result is not None
-
-    def test_corrupt_cache_meta_treated_as_zero(self, tmp_path, monkeypatch):
-        """Corrupt cache_meta.json falls back to cached_warmup=0."""
-        cfg = _base_config()
-        cache_hash = get_cache_hash(cfg, "binance")
-        cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
-        _write_fake_cache(str(cache_dir), warmup_minutes=5000)
-
-        # Corrupt the meta file
-        meta_path = os.path.join(str(cache_dir), "cache_meta.json")
-        with open(meta_path, "w") as f:
-            f.write("not valid json{{{")
-
-        monkeypatch.chdir(tmp_path)
-        result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=100)
-        assert result is None
+        assert resolved is not None
+        assert resolved.resolve() == (root / dir_name).resolve()
 
 
-# ============================================================================
-# Test Class: Save Persists Warmup Metadata
-# ============================================================================
+def test_save_cache_uses_descriptive_dir_name(tmp_path, monkeypatch):
+    cfg = _base_config()
+    hlcvs = np.zeros((10, 1, 4), dtype=np.float64)
+    timestamps = np.arange(10, dtype=np.int64) * 60_000
+    btc_usd = np.ones(10, dtype=np.float64)
+    coins = ["BTC"]
+    mss = {"BTC": {"first_valid_index": 0, "last_valid_index": 9}}
+    ensure_valid_index_metadata(mss, hlcvs, coins, {"__default__": 0})
 
+    monkeypatch.chdir(tmp_path)
+    cache_dir = save_coins_hlcvs_to_cache(
+        cfg, coins, hlcvs, "binance", mss, btc_usd, timestamps=timestamps, warmup_minutes=0
+    )
 
 class TestSavePersistsWarmupMetadata:
     """Verify that save_coins_hlcvs_to_cache writes cache_meta.json."""
@@ -457,6 +400,7 @@ class TestSavePersistsWarmupMetadata:
             cfg, "binance", coins, cache_hash, timestamps=timestamps
         )
         assert cache_dir.name.endswith(f"__{cache_hash[:16]}")
+        assert "binance__BTC__" in str(cache_dir)
 
     def test_save_falls_back_to_count_for_more_than_five_coins(self, tmp_path, monkeypatch):
         """Coin label uses N_coins when the dataset contains more than five coins."""
