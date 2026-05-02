@@ -6974,8 +6974,8 @@ mod tests {
 
     #[test]
     fn unstuck_allowance_ignores_rolling_pnl_lookback() {
-        let hlcvs = Array3::from_shape_vec((2, 1, 4), vec![1.0; 2 * 1 * 4]).unwrap();
-        let btc_usd_prices = Array1::from_vec(vec![20_000.0, 20_000.0]);
+        let hlcvs = Array3::from_shape_vec((3, 1, 4), vec![1.0; 3 * 1 * 4]).unwrap();
+        let btc_usd_prices = Array1::from_vec(vec![20_000.0, 20_000.0, 20_000.0]);
 
         let mut bp_pair = BotParamsPair::default();
         bp_pair.long.n_positions = 1;
@@ -6993,7 +6993,7 @@ mod tests {
             first_timestamp_ms: 0,
             requested_start_timestamp_ms: 0,
             first_valid_indices: vec![0],
-            last_valid_indices: vec![1],
+            last_valid_indices: vec![2],
             warmup_minutes: vec![0],
             trade_start_indices: vec![0],
             global_warmup_bars: 0,
@@ -7001,10 +7001,16 @@ mod tests {
             btc_collateral_ltv_cap: None,
             metrics_only: true,
             filter_by_min_effective_cost: false,
+            dynamic_wel_by_tradability: true,
             hedge_mode: true,
             max_realized_loss_pct: 1.0,
-            candle_interval_minutes: 1,
-            ..Default::default()
+            pnls_max_lookback_days: 1.0,
+            liquidation_threshold: 0.05,
+            equity_hard_stop_loss: EquityHardStopLossConfig::default(),
+            market_orders_allowed: false,
+            market_order_near_touch_threshold: 0.001,
+            market_order_slippage_pct: 0.0005,
+            candle_interval_minutes: 24 * 60,
         };
 
         let mut bt = Backtest::new(
@@ -7017,16 +7023,13 @@ mod tests {
 
         bt.balance.usd_total_balance = 1000.0;
         bt.balance.usd_total_balance_rounded = 1000.0;
-        bt.pnl_cumsum_max = 100.0;
-        bt.pnl_cumsum_running = 30.0;
-        bt.pnl_lookback_bars = 1;
-        bt.rolling_pnl_cumsum_max = 10.0;
-        bt.rolling_pnl_cumsum = 5.0;
+        record_realized_pnl_for_test(&mut bt, 0, 100.0);
+        record_realized_pnl_for_test(&mut bt, 1, -70.0);
 
-        let input = bt.get_orchestrator_input_cached(1, None);
+        let input = bt.get_orchestrator_input_cached(2, None);
         let allowance_pct = 0.2 * 0.5;
         let expected_full = calc_auto_unstuck_allowance(1000.0, allowance_pct, 100.0, 30.0);
-        let expected_rolling = calc_auto_unstuck_allowance(1000.0, allowance_pct, 10.0, 5.0);
+        let expected_rolling = calc_auto_unstuck_allowance(1000.0, allowance_pct, -70.0, -70.0);
         assert!(
             (input.global.unstuck_allowance_long - expected_full).abs() < 1e-12,
             "unstuck allowance should use full realized pnl history"

@@ -95,8 +95,12 @@ def validate_optimize_bounds_against_bot_config(bot_config, optimize_bounds) -> 
     for bound_key in optimize_bounds:
         if not isinstance(bound_key, str):
             continue
+        if bound_key in OBSOLETE_OPTIMIZE_BOUND_KEYS:
+            continue
         canonical_key = DEPRECATED_OPTIMIZE_BOUND_ALIASES.get(bound_key)
         if canonical_key is not None and canonical_key in optimize_bounds:
+            continue
+        if canonical_key is not None and canonical_key in OPTIMIZABLE_BOT_KEY_PATHS:
             continue
         if bound_key in OPTIMIZABLE_BOT_KEY_PATHS:
             continue

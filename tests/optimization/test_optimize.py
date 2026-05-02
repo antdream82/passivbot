@@ -747,8 +747,8 @@ class TestIndividualToConfig:
         result = individual_to_config(individual, lambda x, y, z: y, [], template)
 
         assert result["bot"]["long"]["forager_score_weights"] == {
-            "volume": 1.0,
-            "ema_readiness": 0.0,
+            "volume": 0.0,
+            "ema_readiness": 1.0,
             "volatility": 0.0,
         }
 
