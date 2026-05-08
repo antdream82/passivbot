@@ -543,6 +543,61 @@ def _set_basic_state(bot, symbol="TEST/USDT"):
     return symbol
 
 
+def test_side_specific_approved_coins_block_opposite_side_entries():
+    cfg = _dummy_config()
+    bot = _make_dummy_bot(cfg)
+    symbol = "SP500/USDC:USDC"
+    bot.approved_coins_minus_ignored_coins = {
+        "long": {"XYZ100/USDC:USDC"},
+        "short": {symbol},
+    }
+    bot.ignored_coins = {"long": set(), "short": set()}
+    bot.positions = {
+        symbol: {
+            "long": {"size": 0.0, "price": 0.0},
+            "short": {"size": 0.0, "price": 0.0},
+        }
+    }
+
+    orders, _blocked = bot._to_executable_orders(
+        {
+            symbol: [
+                (1.0, 100.0, "entry_initial_normal_long", 1, "limit"),
+                (-1.0, 100.0, "entry_initial_normal_short", 1, "limit"),
+            ]
+        },
+        {symbol: 100.0},
+    )
+
+    assert len(orders[symbol]) == 1
+    assert orders[symbol][0]["position_side"] == "short"
+    assert orders[symbol][0]["reduce_only"] is False
+
+
+def test_orchestrator_mode_override_marks_unapproved_side_inactive():
+    cfg = _dummy_config()
+    bot = _make_dummy_bot(cfg)
+    symbol = "SP500/USDC:USDC"
+    bot.approved_coins_minus_ignored_coins = {
+        "long": {"XYZ100/USDC:USDC"},
+        "short": {symbol},
+    }
+    bot.ignored_coins = {"long": set(), "short": set()}
+    bot.markets_dict = {symbol: {"active": True}}
+    bot.positions = {
+        symbol: {
+            "long": {"size": 0.0, "price": 0.0},
+            "short": {"size": 0.0, "price": 0.0},
+        }
+    }
+
+    assert bot._orchestrator_mode_override("long", symbol) == "manual"
+    assert bot._orchestrator_mode_override("short", symbol) is None
+
+    bot.positions[symbol]["long"] = {"size": 1.0, "price": 100.0}
+    assert bot._orchestrator_mode_override("long", symbol) == "tp_only"
+
+
 def _make_hsl_fill_event(
     timestamp: int,
     *,

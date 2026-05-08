@@ -202,6 +202,48 @@ always present and did `len(equities_array)` unconditionally. That caused:
 - The correct fix is a defensive `None` guard in `expand_analysis()`, not
   removing `metrics_only`.
 
+### Recent Follow-Up: Live Side-Specific Approved Coins Must Stay Side-Specific
+
+This is a live-runtime safety regression, not just a config nicety.
+
+#### What broke
+
+When `live.approved_coins` was configured asymmetrically per side, a symbol
+approved only for short could still become eligible for long entry selection
+after the live symbol universe was widened by the opposite side's position or
+order state. In the reproduced case, `SP500` was approved for short only, yet
+live opened a long `SP500` position after the long-side approved coin closed.
+
+The fix requires both layers:
+
+- Rust orchestrator must receive side-specific new-entry eligibility and treat
+  disallowed sides as non-entry candidates.
+- Python live reconciliation must keep a final non-reduce entry safety check so
+  a future orchestration regression cannot reopen the bug silently.
+
+#### Required behavior
+
+1. `approved_coins.long` and `approved_coins.short` stay independent for live
+   entry selection.
+2. A symbol that is approved only for one side must not open a new entry on
+   the other side, even if the other side already has a position/order on that
+   symbol.
+3. Existing positions may still be managed for closes/reductions, but no new
+   opposite-side entry may be created.
+4. The live and backtest orchestrator inputs must carry explicit side-specific
+   new-entry eligibility so rebase diffs are visible in Rust, not only in
+   Python reconciliation.
+
+#### Validation
+
+1. Rebuild Rust:
+   `cd /app/pb7/passivbot-rust && VIRTUAL_ENV=/venv_pb7 PATH=/venv_pb7/bin:$PATH maturin develop --release`
+2. Run the live-side regression checks in:
+   - `tests/test_unstucking_safeguards.py`
+   - `passivbot-rust/src/orchestrator.rs`
+3. Reproduce the original live case and confirm `SP500` no longer opens on the
+   long side when only `approved_coins.short` includes it.
+
 ### Critical regression: suite and optimizer evaluation must preserve side-specific approved coins
 
 This regression was the main reason old seed Pareto fronts appeared to collapse

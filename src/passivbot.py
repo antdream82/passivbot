@@ -4235,6 +4235,24 @@ class Passivbot:
             return False
         return True
 
+    def _side_allows_new_entries(self, pside: str, symbol: str) -> bool:
+        """Return True only when new entries are allowed for this exact symbol side."""
+        runtime_forced = getattr(self, "_runtime_forced_modes", {}).get(pside, {}).get(symbol)
+        if runtime_forced:
+            return expand_PB_mode(runtime_forced) == "normal"
+        forced_mode = self.config_get(["live", f"forced_mode_{pside}"], symbol)
+        if forced_mode:
+            return expand_PB_mode(forced_mode) == "normal"
+        return self.is_approved(pside, symbol)
+
+    def _side_entry_block_mode(self, pside: str, symbol: str) -> Optional[str]:
+        """Mode override used when a symbol is not approved for this exact side."""
+        if self._side_allows_new_entries(pside, symbol):
+            return None
+        if self.has_position(pside, symbol):
+            return "tp_only"
+        return "manual"
+
     async def update_exchange_configs(self):
         """Ensure exchange-specific settings are initialised for all active symbols."""
         if not hasattr(self, "already_updated_exchange_config_symbols"):
@@ -6369,6 +6387,9 @@ class Passivbot:
         ineligible_reason = getattr(self, "ineligible_symbols", {}).get(symbol)
         if ineligible_reason is not None:
             return "tp_only" if ineligible_reason == "not active" else "manual"
+        side_block_mode = self._side_entry_block_mode(pside, symbol)
+        if side_block_mode is not None:
+            return side_block_mode
         return None
 
     def _build_orchestrator_mode_overrides(
@@ -6481,6 +6502,7 @@ class Passivbot:
                     trailing = dict(trailing)
                 return {
                     "mode": mode,
+                    "allow_new_entries": self._side_allows_new_entries(pside, symbol),
                     "position": {"size": float(pos["size"]), "price": float(pos["price"])},
                     "trailing": {
                         "min_since_open": float(trailing.get("min_since_open", 0.0)),
@@ -6976,6 +6998,7 @@ class Passivbot:
                     trailing = dict(trailing)
                 return {
                     "mode": mode,
+                    "allow_new_entries": self._side_allows_new_entries(pside, symbol),
                     "position": {"size": float(pos["size"]), "price": float(pos["price"])},
                     "trailing": {
                         "min_since_open": float(trailing.get("min_since_open", 0.0)),
@@ -7276,6 +7299,20 @@ class Passivbot:
                         execution_type = "market" if panic_close_pref == "market" else "limit"
                 if execution_type not in {"limit", "market"}:
                     execution_type = "limit"
+                reduce_only = "close" in order[2]
+                if not reduce_only and not self._side_allows_new_entries(position_side, symbol):
+                    if not hasattr(self, "_blocked_unapproved_entry_orders_logged"):
+                        self._blocked_unapproved_entry_orders_logged = set()
+                    key = (symbol, position_side, pb_order_type)
+                    if key not in self._blocked_unapproved_entry_orders_logged:
+                        self._blocked_unapproved_entry_orders_logged.add(key)
+                        logging.error(
+                            "[safety] blocked unapproved %s entry for %s | order_type=%s",
+                            position_side,
+                            symbol,
+                            pb_order_type,
+                        )
+                    continue
                 ideal_orders_f[symbol].append(
                     {
                         "symbol": symbol,
@@ -7283,7 +7320,7 @@ class Passivbot:
                         "position_side": position_side,
                         "qty": abs(order[0]),
                         "price": order[1],
-                        "reduce_only": "close" in order[2],
+                        "reduce_only": reduce_only,
                         "custom_id": self.format_custom_id_single(order[3]),
                         "type": execution_type,
                         "pb_order_type": pb_order_type,

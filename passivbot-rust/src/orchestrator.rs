@@ -255,10 +255,17 @@ mod core {
         /// `None` means “forager-eligible default”.
         /// `Some(Normal)` means “forced Normal” (always selected).
         pub mode: Option<TradingMode>,
+        /// True only when this symbol is approved for new entries on this exact side.
+        #[serde(default = "default_true")]
+        pub allow_new_entries: bool,
         pub position: Position,
         pub trailing: TrailingPriceBundle,
         /// Per-symbol/per-pside params after applying coin_overrides.
         pub bot_params: BotParams,
+    }
+
+    fn default_true() -> bool {
+        true
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -980,7 +987,11 @@ mod core {
                 PositionSide::Long => s.long.mode,
                 PositionSide::Short => s.short.mode,
             };
-            if mode == Some(TradingMode::Normal) {
+            let allow_new_entries = match pside {
+                PositionSide::Long => s.long.allow_new_entries,
+                PositionSide::Short => s.short.allow_new_entries,
+            };
+            if mode == Some(TradingMode::Normal) && allow_new_entries {
                 out.push(s.symbol_idx);
             }
         }
@@ -1039,6 +1050,7 @@ mod core {
                 .copied()
                 .unwrap_or(false);
             let enabled = is_symbol_pside_enabled(side)
+                && side.allow_new_entries
                 && s.tradable
                 && !already_active
                 && one_way_allows_initial_slot(symbols, s.symbol_idx, pside, hedge_mode)
@@ -1782,9 +1794,11 @@ mod core {
                     // No position on either side - decide based on eligibility and EMA band distance
                     let long_enabled = enabled_long
                         && is_symbol_pside_enabled(&s.long)
+                        && s.long.allow_new_entries
                         && should_generate_entries(effective_mode(s.long.mode, false), false, true);
                     let short_enabled = enabled_short
                         && is_symbol_pside_enabled(&s.short)
+                        && s.short.allow_new_entries
                         && should_generate_entries(
                             effective_mode(s.short.mode, false),
                             false,
@@ -1872,6 +1886,7 @@ mod core {
 
                 let allow_initial = actives_long[s.symbol_idx]
                     && !workspace.one_way_block_initial_long[s.symbol_idx]
+                    && s.long.allow_new_entries
                     && effective_min_cost_is_low_enough(
                         input.balance,
                         input.global.filter_by_min_effective_cost,
@@ -1893,7 +1908,8 @@ mod core {
                         closes.push(p);
                     }
                 } else {
-                    let wants_entries = should_generate_entries(mode, has_pos, allow_initial);
+                    let wants_entries = s.long.allow_new_entries
+                        && should_generate_entries(mode, has_pos, allow_initial);
                     let wants_closes = should_generate_closes(mode, has_pos);
                     if wants_entries || wants_closes {
                         let ema_bands =
@@ -2144,6 +2160,7 @@ mod core {
 
                 let allow_initial = actives_short[s.symbol_idx]
                     && !workspace.one_way_block_initial_short[s.symbol_idx]
+                    && s.short.allow_new_entries
                     && effective_min_cost_is_low_enough(
                         input.balance,
                         input.global.filter_by_min_effective_cost,
@@ -2165,7 +2182,8 @@ mod core {
                         closes.push(p);
                     }
                 } else {
-                    let wants_entries = should_generate_entries(mode, has_pos, allow_initial);
+                    let wants_entries = s.short.allow_new_entries
+                        && should_generate_entries(mode, has_pos, allow_initial);
                     let wants_closes = should_generate_closes(mode, has_pos);
                     if wants_entries || wants_closes {
                         let ema_bands =
@@ -2909,12 +2927,14 @@ mod core {
                 emas,
                 long: SymbolSideInput {
                     mode: None,
+                    allow_new_entries: true,
                     position: Position::default(),
                     trailing: TrailingPriceBundle::default(),
                     bot_params: bp.clone(),
                 },
                 short: SymbolSideInput {
                     mode: None,
+                    allow_new_entries: true,
                     position: Position::default(),
                     trailing: TrailingPriceBundle::default(),
                     bot_params: bp,
@@ -4077,6 +4097,103 @@ mod core {
                  not snapped balance (WE=0.5 < 0.6). Orders: {:?}",
                 out.orders.iter().map(|o| &o.order_type).collect::<Vec<_>>()
             );
+        }
+
+        #[test]
+        fn disallowed_side_new_entries_are_not_generated() {
+            let mut sp500 = make_basic_symbol(0);
+            let mut xyz100 = make_basic_symbol(1);
+            sp500.long.allow_new_entries = false;
+            sp500.short.allow_new_entries = true;
+            xyz100.long.allow_new_entries = true;
+            xyz100.short.allow_new_entries = false;
+
+            let mut global_bp = BotParamsPair::default();
+            global_bp.long.total_wallet_exposure_limit = 1.0;
+            global_bp.long.n_positions = 1;
+            global_bp.short.total_wallet_exposure_limit = 1.0;
+            global_bp.short.n_positions = 1;
+
+            let input = OrchestratorInput {
+                balance: 1000.0,
+                balance_raw: 1000.0,
+                global: OrchestratorGlobal {
+                    filter_by_min_effective_cost: false,
+                    market_orders_allowed: false,
+                    market_order_near_touch_threshold: 0.001,
+                    panic_close_market: false,
+                    unstuck_allowance_long: 0.0,
+                    unstuck_allowance_short: 0.0,
+                    max_realized_loss_pct: 1.0,
+                    realized_pnl_cumsum_max: 0.0,
+                    realized_pnl_cumsum_last: 0.0,
+                    sort_global: true,
+                    global_bot_params: global_bp,
+                    hedge_mode: true,
+                },
+                symbols: vec![sp500, xyz100],
+                peek_hints: None,
+            };
+
+            let out = compute_ideal_orders(&input).unwrap();
+            assert!(!out.orders.iter().any(|o| {
+                o.symbol_idx == 0
+                    && o.pside == PositionSide::Long
+                    && !is_close_order_type(o.order_type)
+            }));
+            assert!(!out.orders.iter().any(|o| {
+                o.symbol_idx == 1
+                    && o.pside == PositionSide::Short
+                    && !is_close_order_type(o.order_type)
+            }));
+        }
+
+        #[test]
+        fn disallowed_side_existing_position_allows_closes_not_entries() {
+            let mut sym = make_basic_symbol(0);
+            sym.long.allow_new_entries = false;
+            sym.long.position = Position {
+                size: 1.0,
+                price: 100.0,
+            };
+            sym.long.bot_params.close_grid_qty_pct = 1.0;
+            sym.long.bot_params.close_grid_markup_start = 0.01;
+            sym.long.bot_params.close_grid_markup_end = 0.01;
+
+            let mut global_bp = BotParamsPair::default();
+            global_bp.long.total_wallet_exposure_limit = 1.0;
+            global_bp.long.n_positions = 1;
+
+            let input = OrchestratorInput {
+                balance: 1000.0,
+                balance_raw: 1000.0,
+                global: OrchestratorGlobal {
+                    filter_by_min_effective_cost: false,
+                    market_orders_allowed: false,
+                    market_order_near_touch_threshold: 0.001,
+                    panic_close_market: false,
+                    unstuck_allowance_long: 0.0,
+                    unstuck_allowance_short: 0.0,
+                    max_realized_loss_pct: 1.0,
+                    realized_pnl_cumsum_max: 0.0,
+                    realized_pnl_cumsum_last: 0.0,
+                    sort_global: true,
+                    global_bot_params: global_bp,
+                    hedge_mode: true,
+                },
+                symbols: vec![sym],
+                peek_hints: None,
+            };
+
+            let out = compute_ideal_orders(&input).unwrap();
+            assert!(out
+                .orders
+                .iter()
+                .any(|o| { o.pside == PositionSide::Long && is_close_order_type(o.order_type) }));
+            assert!(!out
+                .orders
+                .iter()
+                .any(|o| { o.pside == PositionSide::Long && !is_close_order_type(o.order_type) }));
         }
 
         #[test]
