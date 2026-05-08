@@ -497,7 +497,8 @@ Minimum validation for this regression:
 
 ### Notes
 
-- Current rebase baseline uses `ccxt==4.5.47`.
+- Current rebase baseline follows `requirements-live.txt`, currently
+  `ccxt==4.5.48`.
 - Any change under [passivbot-rust/src](/app/pb7/passivbot-rust/src) requires a Rust
   extension rebuild before validating Python-side behavior or backtest/optimize
   outputs.
