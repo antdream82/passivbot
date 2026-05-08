@@ -456,6 +456,11 @@ pub struct Backtest<'a> {
     did_fill_long: HashSet<usize>,
     did_fill_short: HashSet<usize>,
     pub total_wallet_exposures: Vec<f64>,
+    wallet_exposure_sum_long: f64,
+    wallet_exposure_sum_short: f64,
+    wallet_exposure_max_long: f64,
+    wallet_exposure_max_short: f64,
+    wallet_exposure_sample_count: usize,
     // removed rolling_volume_sum & buffer — replaced by per-coin EMAs in `emas`
     equity_tracking_active: bool,
     debug_writer: Option<DebugOrderWriter>,
@@ -1793,6 +1798,11 @@ impl<'a> Backtest<'a> {
             did_fill_long: HashSet::new(),
             did_fill_short: HashSet::new(),
             total_wallet_exposures: Vec::with_capacity(n_timesteps),
+            wallet_exposure_sum_long: 0.0,
+            wallet_exposure_sum_short: 0.0,
+            wallet_exposure_max_long: 0.0,
+            wallet_exposure_max_short: 0.0,
+            wallet_exposure_sample_count: 0,
             equity_tracking_active: false,
             debug_writer: if DEBUG_DUMP_ORDERS {
                 DebugOrderWriter::new_for_mode()
@@ -3036,8 +3046,28 @@ impl<'a> Backtest<'a> {
 
     fn record_total_wallet_exposure(&mut self) {
         // For analysis time series we record the net TWE (long + short, where short is negative).
-        let (_, _, twe_net) = self.compute_twe_components();
+        let (twe_long, twe_short, twe_net) = self.compute_twe_components();
         self.total_wallet_exposures.push(twe_net);
+        let long_abs = twe_long.abs();
+        let short_abs = twe_short.abs();
+        self.wallet_exposure_sum_long += long_abs;
+        self.wallet_exposure_sum_short += short_abs;
+        self.wallet_exposure_max_long = self.wallet_exposure_max_long.max(long_abs);
+        self.wallet_exposure_max_short = self.wallet_exposure_max_short.max(short_abs);
+        self.wallet_exposure_sample_count += 1;
+    }
+
+    pub fn wallet_exposure_side_summary(&self) -> (f64, f64, f64, f64) {
+        if self.wallet_exposure_sample_count == 0 {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let denom = self.wallet_exposure_sample_count as f64;
+        (
+            self.wallet_exposure_sum_long / denom,
+            self.wallet_exposure_max_long,
+            self.wallet_exposure_sum_short / denom,
+            self.wallet_exposure_max_short,
+        )
     }
 
     fn compute_twe_components(&self) -> (f64, f64, f64) {

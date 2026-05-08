@@ -65,6 +65,8 @@ Start from `upstream/master`, then restore the following divergence packages:
 - [src/pareto_store.py](/app/pb7/src/pareto_store.py)
 - [src/tools/iterative_backtester.py](/app/pb7/src/tools/iterative_backtester.py)
 - [passivbot-rust/src/analysis.rs](/app/pb7/passivbot-rust/src/analysis.rs)
+- [passivbot-rust/src/backtest.rs](/app/pb7/passivbot-rust/src/backtest.rs)
+- [passivbot-rust/src/python.rs](/app/pb7/passivbot-rust/src/python.rs)
 - [passivbot-rust/src/types.rs](/app/pb7/passivbot-rust/src/types.rs)
 
 ### Required behavior
@@ -110,11 +112,19 @@ Start from `upstream/master`, then restore the following divergence packages:
    signed negative.
 9. Metric allow-lists and scoring/weight plumbing must include the local
    actual-exposure family.
+10. Optimizer `metrics_only` runs must still export long/short realized
+    exposure `mean` and `max` metrics from Rust without returning full fills or
+    equity arrays to Python. This keeps `gain/adg/mdg*_per_actual_exposure_long`
+    and `gain/adg/mdg*_per_actual_exposure_short` meaningful in optimize
+    Pareto outputs.
 
 ### Notes
 
 - Upstream structured scoring stays authoritative.
 - Local metrics are added on top of that structure, not instead of it.
+- Median side-exposure metrics are useful for full backtest artifacts, but are
+  intentionally not required in optimizer `metrics_only` output because exact
+  medians require retaining a full side-exposure series.
 
 ## Package 3: Optimize, Limits, And Seed Compatibility
 
@@ -161,6 +171,36 @@ Start from `upstream/master`, then restore the following divergence packages:
 - Preserve upstream zero-fill safety while layering local metrics.
 - Starting-config compatibility matters because PBGUI and historical optimize
   outputs are used as seeds in production.
+
+### Recent Follow-Up: Metrics-Only Analysis Export Must Be None-Safe
+
+This was introduced by the local optimizer memory-pressure change, not by
+upstream.
+
+#### What broke
+
+The `metrics_only` path in `src/backtest.py` calls:
+
+- `expand_analysis(analysis_usd, analysis_btc, None, None, config)`
+
+`expand_analysis()` previously assumed `fills` and `equities_array` were
+always present and did `len(equities_array)` unconditionally. That caused:
+
+- `TypeError: object of type 'NoneType' has no len()`
+
+#### Required behavior
+
+1. `metrics_only` export must remain available for optimizer worker memory
+   pressure reduction.
+2. `expand_analysis()` must treat `fills=None` and `equities_array=None` as
+   empty inputs.
+3. Normal backtest behavior must remain unchanged.
+
+#### Notes
+
+- This is a local regression in the optimizer export path.
+- The correct fix is a defensive `None` guard in `expand_analysis()`, not
+  removing `metrics_only`.
 
 ### Critical regression: suite and optimizer evaluation must preserve side-specific approved coins
 
@@ -450,6 +490,23 @@ Minimum validation for this regression:
 4. Backtest zero-fill, no-trade, and legacy-fill edge cases must stay covered.
 5. Starting-config compatibility for legacy seeds must stay covered.
 6. Downloader compatibility for Hyperliquid must stay covered.
+
+## Recent Rebase Follow-Ups
+
+These are the additional fixes made after the initial rebase pass to keep the
+current production workflows stable:
+
+1. Seeded optimize runs must preserve the intended search surface without
+   widening side-specific coins or mutating explicit zero-valued forager
+   weights.
+2. Unstuck allowance must stay cumulative after the HSL / recent-loss
+   semantics work, so `close_unstuck_*` sizing remains comparable to the
+   historical engine.
+3. Optimize seed compatibility and analysis export must keep working for the
+   current PB7 result format, including older seed configs and stored result
+   artifacts.
+4. The upstream scoring base must still expose the local metric extensions
+   needed in production, including the actual-exposure and ulcer/UI families.
 
 ## Intentional Non-Reapplications
 

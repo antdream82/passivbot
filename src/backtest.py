@@ -1740,6 +1740,10 @@ def prep_backtest_args(
 def expand_analysis(analysis_usd, analysis_btc, fills, equities_array, config):
     analysis_usd = dict(analysis_usd)
     analysis_btc = dict(analysis_btc)
+    if fills is None:
+        fills = []
+    if equities_array is None:
+        equities_array = []
     total_actual_exposure = float(analysis_usd.get("total_wallet_exposure_mean", 0.0) or 0.0)
     fill_columns = [
         "index",
@@ -1779,7 +1783,10 @@ def expand_analysis(analysis_usd, analysis_btc, fills, equities_array, config):
                 f"Unexpected fills width {fills_width}; expected {len(fill_columns)} or {len(legacy_fill_columns)}"
             )
     total_steps = int(len(equities_array))
-    actual_exposure_means = {"long": 0.0, "short": 0.0}
+    actual_exposure_means = {
+        "long": float(analysis_usd.get("wallet_exposure_mean_long", 0.0) or 0.0),
+        "short": float(analysis_usd.get("wallet_exposure_mean_short", 0.0) or 0.0),
+    }
     if total_steps > 0:
         if fills_df.empty:
             exposure_series = {
