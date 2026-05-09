@@ -42,16 +42,33 @@ Start from `upstream/master`, then restore the following divergence packages:
    loops when Hyperliquid returns lagging open-order snapshots.
 8. Snapped-balance behavior used for sizing and orchestration must be
    preserved.
+   Hyperliquid HIP-3 cross-position margin restoration must use stable
+   entry-price margin, not mark-moving `marginUsed`, so unrealized-PnL drift
+   does not feed back into wallet balance sizing and order quantities.
+   That corrected balance must be produced before hysteresis is applied; the
+   lower raw unifiedAccount token balance must not become the snap anchor.
 9. Market metadata and margin-mode handling must preserve current local
-   Hyperliquid behavior.
+   Hyperliquid behavior: HIP-3/non-standard perps are live-tradable only when
+   they are cross-capable and run in cross mode. Isolated-only HIP-3 markets
+   must be skipped for new entries, and existing isolated HIP-3 positions or
+   open orders must fail startup loudly instead of running in partial-support
+   mode.
 10. Spot namespace collision handling for stock perps / HIP-3 symbols must
     remain intact.
+11. Hyperliquid `unifiedAccount` balance payloads may omit
+    `info.assetPositions`. In that mode, live startup must fetch core and
+    HIP-3 positions separately instead of treating the missing key as fatal.
+    Non-unified accounts still fail loudly when HIP-3/non-standard perps are
+    present, because those accounts cannot manage the required state safely.
 
 ### Notes
 
 - Immediate local removal on `cancel-gone` is the important part.
 - Tombstone persistence across restart is operationally useful and should stay
   unless live evidence proves it unnecessary.
+- This differs from the older combined `fetch_balance()` contract where
+  `assetPositions` carried both balance and positions in one payload. Rebase
+  work must preserve the split-fetch fallback for unified accounts.
 
 ## Package 2: Metric Semantics And Analysis Output
 

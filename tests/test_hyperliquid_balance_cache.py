@@ -79,6 +79,88 @@ class DummyCCA:
         }
 
 
+class DummyCCAWithoutAssetPositions:
+    def __init__(self):
+        self.calls = 0
+
+    async def fetch_balance(self):
+        self.calls += 1
+        return {
+            "info": {
+                "marginSummary": {"accountValue": 200.0},
+            }
+        }
+
+
+class DummyCCAUnifiedBalance:
+    def __init__(self):
+        self.balance_calls = 0
+        self.position_calls = []
+
+    async def fetch_balance(self):
+        self.balance_calls += 1
+        return {
+            "total": {"USDC": 1234.5},
+            "info": {
+                "balances": [{"coin": "USDC", "total": "1234.5"}],
+                "tokenToAvailableAfterMaintenance": {"USDC": "1200.0"},
+            },
+        }
+
+    async def fetch_positions(self, **kwargs):
+        self.position_calls.append(kwargs)
+        if kwargs == {"params": {"dex": "xyz"}}:
+            return [
+                {
+                    "symbol": "XYZ-SP500/USDC:USDC",
+                    "side": "short",
+                    "contracts": 0.002,
+                    "entryPrice": 7000.0,
+                    "marginMode": "cross",
+                }
+            ]
+        return [
+            {
+                "symbol": "BTC/USDC:USDC",
+                "side": "long",
+                "contracts": 0.01,
+                "entryPrice": 60000.0,
+                "marginMode": "cross",
+            }
+        ]
+
+
+class DummyCCAUnifiedHip3Margin:
+    async def fetch_balance(self):
+        return {
+            "total": {"USDC": 1000.0},
+            "info": {
+                "balances": [{"coin": "USDC", "total": "1000.0"}],
+                "tokenToAvailableAfterMaintenance": [["0", "990.0"]],
+            },
+        }
+
+    async def fetch_positions(self, **kwargs):
+        if kwargs == {"params": {"dex": "xyz"}}:
+            return [
+                {
+                    "symbol": "XYZ-XYZ100/USDC:USDC",
+                    "side": "long",
+                    "contracts": 0.7201,
+                    "entryPrice": 29098.0,
+                    "marginMode": "cross",
+                    "leverage": 5.0,
+                    "info": {
+                        "position": {
+                            "marginUsed": "4210.12345",
+                            "leverage": {"type": "cross", "value": "5"},
+                        }
+                    },
+                }
+            ]
+        return []
+
+
 @pytest.mark.asyncio
 async def test_hyperliquid_combined_fetch_reused(stubbed_modules):
     HyperliquidBot = importlib.import_module("exchanges.hyperliquid").HyperliquidBot
@@ -112,6 +194,113 @@ async def test_hyperliquid_combined_fetch_reused(stubbed_modules):
     ok = await bot.update_positions()
     assert ok is True
     assert dummy.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_missing_asset_positions_fails_loudly(stubbed_modules):
+    HyperliquidBot = importlib.import_module("exchanges.hyperliquid").HyperliquidBot
+
+    import asyncio
+
+    bot = HyperliquidBot.__new__(HyperliquidBot)
+    bot.quote = "USDC"
+    bot.positions = {}
+    bot.active_symbols = []
+    bot.fetched_positions = []
+    bot.coin_to_symbol = lambda c: "BTC/USDT:USDT" if c == "BTC" else c
+    bot.cm = types.SimpleNamespace(get_current_close=lambda *args, **kwargs: 1.0)
+    bot._hl_fetch_lock = asyncio.Lock()
+    bot._hl_cache_generation = 0
+    bot._hl_user_abstraction = "dexAbstraction"
+    bot.cca = DummyCCAWithoutAssetPositions()
+
+    with pytest.raises(FatalBotException, match="missing info\\.assetPositions"):
+        await bot.fetch_positions()
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_unified_balance_without_asset_positions_fetches_positions(
+    stubbed_modules,
+):
+    HyperliquidBot = importlib.import_module("exchanges.hyperliquid").HyperliquidBot
+
+    import asyncio
+
+    bot = HyperliquidBot.__new__(HyperliquidBot)
+    bot.quote = "USDC"
+    bot.positions = {}
+    bot.open_orders = {}
+    bot.active_symbols = ["BTC/USDC:USDC", "XYZ-SP500/USDC:USDC"]
+    bot.fetched_positions = []
+    bot.coin_to_symbol = lambda c: "BTC/USDC:USDC" if c == "BTC" else c
+    bot.cm = types.SimpleNamespace(get_current_close=lambda *args, **kwargs: 1.0)
+    bot._hl_fetch_lock = asyncio.Lock()
+    bot._hl_cache_generation = 0
+    bot._hl_user_abstraction = "unifiedAccount"
+    bot._hl_unified_enabled = True
+    bot._hl_live_margin_modes = {}
+    bot.markets_dict = {
+        "BTC/USDC:USDC": {"baseName": "BTC", "info": {}},
+        "XYZ-SP500/USDC:USDC": {"baseName": "xyz:SP500", "info": {}},
+    }
+    dummy = DummyCCAUnifiedBalance()
+    bot.cca = dummy
+
+    raw_snapshot, positions, balance = await bot._fetch_positions_and_balance()
+
+    assert balance == 1234.5
+    assert raw_snapshot["positions"]["core"][0]["symbol"] == "BTC/USDC:USDC"
+    assert raw_snapshot["positions"]["hip3"][0]["fetch_spec"] == {"params": {"dex": "xyz"}}
+    assert {
+        (position["symbol"], position["position_side"], position["size"])
+        for position in positions
+    } == {
+        ("BTC/USDC:USDC", "long", 0.01),
+        ("XYZ-SP500/USDC:USDC", "short", -0.002),
+    }
+    assert dummy.position_calls == [{}, {"params": {"dex": "xyz"}}]
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_combined_fetch_returns_corrected_balance_without_double_reconcile(
+    stubbed_modules,
+):
+    HyperliquidBot = importlib.import_module("exchanges.hyperliquid").HyperliquidBot
+
+    bot = HyperliquidBot.__new__(HyperliquidBot)
+    bot.quote = "USDC"
+    bot.positions = {}
+    bot.open_orders = {}
+    bot.active_symbols = ["XYZ-XYZ100/USDC:USDC"]
+    bot.fetched_positions = []
+    bot.coin_to_symbol = lambda c: c
+    bot.cm = types.SimpleNamespace(get_current_close=lambda *args, **kwargs: 1.0)
+    bot._hl_user_abstraction = "unifiedAccount"
+    bot._hl_unified_enabled = True
+    bot._hl_live_margin_modes = {}
+    bot.balance_override = None
+    bot.balance_hysteresis_snap_pct = 0.02
+    bot.previous_hysteresis_balance = None
+    bot.balance_raw = 1_000.0
+    bot.balance = 1_000.0
+    bot._exchange_reported_balance_raw = 1_000.0
+    bot.c_mults = {"XYZ-XYZ100/USDC:USDC": 1.0}
+    bot.markets_dict = {
+        "XYZ-XYZ100/USDC:USDC": {"baseName": "xyz:XYZ100", "info": {}},
+    }
+    bot.cca = DummyCCAUnifiedHip3Margin()
+
+    _, positions, balance = await bot._fetch_positions_and_balance()
+    bot.fetched_positions = positions
+    bot._exchange_reported_balance_raw = balance
+    bot.balance_raw = balance
+    bot.balance = balance
+
+    expected = 1_000.0 + (0.7201 * 29098.0 / 5.0)
+    assert balance == pytest.approx(expected)
+    assert bot._hl_exchange_balance_includes_position_margin is True
+    assert bot._reconcile_balance_after_positions_and_balance_refresh() is False
+    assert bot.balance_raw == pytest.approx(expected)
 
 
 @pytest.mark.asyncio
@@ -347,8 +536,35 @@ def test_hyperliquid_reconcile_adds_back_hip3_position_margin(stubbed_modules):
     changed = bot._reconcile_balance_after_positions_and_balance_refresh()
 
     assert changed is True
-    assert bot.balance_raw == pytest.approx(51.194323 + 0.68139)
-    assert bot.balance == pytest.approx(51.194323 + 0.68139)
+    expected = 51.194323 + (0.002 * 6813.8 / 20.0)
+    assert bot.balance_raw == pytest.approx(expected)
+    assert bot.balance == pytest.approx(expected)
+
+
+def test_hyperliquid_hip3_position_margin_restore_uses_entry_margin_not_mark_margin(
+    stubbed_modules,
+):
+    HyperliquidBot = importlib.import_module("exchanges.hyperliquid").HyperliquidBot
+    bot = _make_probe_bot(HyperliquidBot)
+    bot.c_mults["XYZ-SP500/USDC:USDC"] = 1.0
+    bot.fetched_positions = [
+        {
+            "symbol": "XYZ-SP500/USDC:USDC",
+            "position_side": "long",
+            "size": 0.7201,
+            "price": 29098.0,
+            "leverage": 5.0,
+            "margin_used": 4202.79164,
+        }
+    ]
+
+    first = bot._position_margin_to_restore()
+    bot.fetched_positions[0]["margin_used"] = 4210.12345
+    second = bot._position_margin_to_restore()
+
+    expected = 0.7201 * 29098.0 / 5.0
+    assert first == pytest.approx(expected)
+    assert second == pytest.approx(expected)
 
 
 def test_hyperliquid_reconcile_restores_only_hip3_position_margin_on_open_orders_refresh(
@@ -380,7 +596,7 @@ def test_hyperliquid_reconcile_restores_only_hip3_position_margin_on_open_orders
 
     changed = bot._reconcile_balance_after_open_orders_refresh()
 
-    expected = 51.194323 + 0.68144
+    expected = 51.194323 + (0.002 * 6814.3 / 20.0)
     assert changed is True
     assert bot.balance_raw == pytest.approx(expected)
     assert bot.balance == pytest.approx(expected)

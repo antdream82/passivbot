@@ -97,6 +97,12 @@ Passivbot shows your **total account value** from the Hyperliquid API, which inc
 - All locked margin
 - Unrealized PnL
 
+In live logs, `raw` is the latest exchange-reported balance after Hyperliquid-specific
+corrections, while `snap` is the hysteresis-smoothed balance used for sizing. With the
+default `balance_hysteresis_snap_pct`, `snap` should usually change less often than `raw`.
+If you see `raw` and `snap` moving together on every refresh, that is usually a sign that
+the live balance correction path is wrong or the bot has not been restarted after a code fix.
+
 The balance changes you see in logs reflect margin being allocated/released as positions open/close:
 ```
 [balance] 105.21 -> 84.27   # Margin locked for new position

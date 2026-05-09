@@ -4,6 +4,17 @@ All notable user-facing changes will be documented in this file.
 
 ## Unreleased
 
+- Hyperliquid unifiedAccount balance refresh now handles balance payloads without
+  `info.assetPositions` by fetching positions separately, while non-unified
+  accounts still fail loudly instead of crashing with a raw `KeyError`. Stock-perp
+  approval logging now reports unifiedAccount mode as enabled instead of warning
+  about non-unified failure.
+- Hyperliquid HIP-3 cross-position balance restoration now uses entry-price
+  margin instead of mark-moving `marginUsed`, preventing unrealized-PnL drift from
+  feeding back into wallet balance sizing and causing small cancel/repost churn.
+- Hyperliquid corrected balance is now produced before hysteresis is applied, so
+  unifiedAccount payloads that omit position margin no longer reset the snap
+  anchor to the lower exchange-reported token balance on every refresh.
 - Changed the HSL config default `live.hsl_signal_mode` to `unified`, making account-level strategy drawdown the canonical HSL signal while keeping `pside` available for side-local HSL tuning, and clarified that HSL RED waits for all positions on that side to be fully closed rather than waiting for PnL recovery.
 - Added `passivbot tool merge-paretos` for combining two or more Pareto run/front directories into capped long/short starting-config sets.
 - Changed optimizer `fixed_params` and `--fine_tune_params` from exact-only bounds keys to literal bounds-key selectors, with sorted multi-line logs showing each selector expansion and the resulting fixed/tunable bounds.

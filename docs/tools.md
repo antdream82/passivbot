@@ -134,7 +134,9 @@ stock perps. They are intended to be reused for future live diagnostics instead 
 one-off scripts.
 
 - `passivbot tool hyperliquid-balance-probe` is read-only. It fetches one wallet balance and prints
-  a normalized summary.
+  a normalized summary. On unifiedAccount wallets, the raw payload may omit
+  `info.assetPositions`; the probe still shows the available balance totals and helps confirm
+  whether the account is exposing the unified balance shape.
 - `passivbot tool hyperliquid-order-margin-probe` is mutating. It places one tiny post-only order,
   snapshots balance changes, then cancels it.
 - `passivbot tool hyperliquid-position-probe` is mutating. It can open/flatten a tiny position and
@@ -153,6 +155,9 @@ passivbot tool hyperliquid-position-probe --user hyperliquid_01 --symbol XYZ-SP5
 Recommended usage:
 
 - Start with `hyperliquid-balance-probe` to confirm the wallet and baseline balance fields.
+- If `raw` and `snap` stay identical in live logs despite a nonzero
+  `balance_hysteresis_snap_pct`, check the live process is running the latest build;
+  the probe is useful for verifying the underlying exchange payload first.
 - Use `hyperliquid-order-margin-probe` to inspect how a single resting order changes
   `accountValue`, `withdrawable`, and related fields.
 - Use `hyperliquid-position-probe` only when you need to inspect live position-margin behavior,

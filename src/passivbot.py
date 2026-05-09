@@ -8629,10 +8629,16 @@ class Passivbot:
                                 for s in stock_syms
                             }
                         )
-                        logging.warning(
-                            "Stock perps detected in approved_coins (%s). On Hyperliquid, HIP-3/non-standard perps require unifiedAccount mode; non-unified accounts will fail loudly.",
-                            ",".join(coins),
-                        )
+                        if getattr(self, "_hl_unified_enabled", False):
+                            logging.info(
+                                "Stock perps detected in approved_coins (%s). Hyperliquid unifiedAccount mode is enabled.",
+                                ",".join(coins),
+                            )
+                        else:
+                            logging.warning(
+                                "Stock perps detected in approved_coins (%s). On Hyperliquid, HIP-3/non-standard perps require unifiedAccount mode; non-unified accounts will fail loudly.",
+                                ",".join(coins),
+                            )
                         self._stock_perps_warning_logged = True
             except Exception:
                 pass

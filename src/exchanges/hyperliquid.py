@@ -350,8 +350,13 @@ class HyperliquidBot(CCXTBot):
         info_position = {}
         if isinstance(position.get("info"), dict):
             info_position = position["info"].get("position", {}) or {}
+        leverage = position.get("leverage")
+        if leverage is None:
+            leverage_info = info_position.get("leverage")
+            if isinstance(leverage_info, dict):
+                leverage = leverage_info.get("value")
         symbol = self._safe_symbol_from_exchange(position["symbol"])
-        return {
+        normalized = {
             "symbol": symbol,
             "position_side": side,
             "size": contracts,
@@ -364,6 +369,9 @@ class HyperliquidBot(CCXTBot):
                 or 0.0
             ),
         }
+        if leverage is not None:
+            normalized["leverage"] = float(leverage)
+        return normalized
 
     async def _fetch_hip3_positions(self, *, include_raw: bool = False):
         """Fetch HIP-3 positions via dex-scoped CCXT routes."""
@@ -390,6 +398,60 @@ class HyperliquidBot(CCXTBot):
         if include_raw:
             return raw_payloads, normalized_positions
         return normalized_positions
+
+    async def _fetch_core_positions(self, *, include_raw: bool = False):
+        """Fetch non-HIP-3 positions through CCXT when balance payloads omit them."""
+        fetched = await self.cca.fetch_positions()
+        positions = []
+        for position in fetched:
+            normalized = self._normalize_ccxt_position(position)
+            if self._get_hl_dex_for_symbol(normalized["symbol"]):
+                continue
+            self._record_hl_live_margin_mode(
+                normalized["symbol"], normalized.get("margin_mode")
+            )
+            positions.append(normalized)
+        if include_raw:
+            return deepcopy(fetched), positions
+        return positions
+
+    def _extract_balance_from_unified_payload(
+        self,
+        info: dict,
+        balance_info: dict,
+        positions: list[dict],
+    ) -> float:
+        """Extract wallet balance from Hyperliquid unifiedAccount balance shapes."""
+        quote = getattr(self, "quote", "USDC")
+        total = info.get("total")
+        if isinstance(total, dict) and quote in total and total[quote] is not None:
+            return float(total[quote])
+
+        balances = balance_info.get("balances")
+        if isinstance(balances, list):
+            for entry in balances:
+                if not isinstance(entry, dict):
+                    continue
+                token = entry.get("coin") or entry.get("token") or entry.get("currency")
+                if str(token).upper() != quote.upper():
+                    continue
+                for field in ("total", "balance", "amount", "walletBalance"):
+                    if entry.get(field) is not None:
+                        return float(entry[field])
+
+        for summary_key in ("marginSummary", "crossMarginSummary"):
+            summary = balance_info.get(summary_key)
+            if isinstance(summary, dict) and summary.get("accountValue") is not None:
+                upnl = sum(
+                    float(pos.get("upnl") or pos.get("unrealizedPnl") or 0.0)
+                    for pos in positions
+                )
+                return float(summary["accountValue"]) - upnl
+
+        raise FatalBotException(
+            "Hyperliquid unifiedAccount balance payload has no usable balance field; "
+            f"info_keys={sorted(balance_info.keys())}"
+        )
 
     def _filter_approved_symbols(self, pside: str, symbols: set[str]) -> set[str]:
         del pside
@@ -590,43 +652,75 @@ class HyperliquidBot(CCXTBot):
 
     async def _fetch_positions_and_balance(self):
         info = await self.cca.fetch_balance()
-        quote = getattr(self, "quote", "USDC")
-        if quote in info.get("total", {}):
-            equity = float(info["total"][quote])
-        else:
-            equity = float(info["info"]["marginSummary"]["accountValue"]) - sum(
-                [float(x["position"]["unrealizedPnl"]) for x in info["info"]["assetPositions"]]
+        if not isinstance(info, dict):
+            raise FatalBotException(
+                "Hyperliquid fetch_balance returned a non-dict payload; "
+                f"abstraction={getattr(self, '_hl_user_abstraction', 'unknown')!r}"
+            )
+        balance_info = info.get("info")
+        if not isinstance(balance_info, dict):
+            raise FatalBotException(
+                "Hyperliquid fetch_balance payload missing info dict; "
+                f"abstraction={getattr(self, '_hl_user_abstraction', 'unknown')!r} "
+                f"top_level_keys={sorted(info.keys())}"
+            )
+        asset_positions = balance_info.get("assetPositions")
+        unified_balance_shape = not isinstance(asset_positions, list)
+        if unified_balance_shape and not getattr(self, "_hl_unified_enabled", False):
+            raise FatalBotException(
+                "Hyperliquid fetch_balance payload missing info.assetPositions; "
+                f"abstraction={getattr(self, '_hl_user_abstraction', 'unknown')!r} "
+                f"info_keys={sorted(balance_info.keys())} "
+                "non-unified Hyperliquid accounts with HIP-3/non-standard perps "
+                "must use unifiedAccount mode"
             )
         positions = {}
-        for x in info["info"]["assetPositions"]:
-            symbol = self.coin_to_symbol(x["position"]["coin"])
-            leverage = x["position"].get("leverage", {})
-            if isinstance(leverage, dict):
-                self._record_hl_live_margin_mode(symbol, leverage.get("type"))
-            size = float(x["position"]["szi"])
-            elm = {
-                "symbol": symbol,
-                "position_side": ("long" if size > 0.0 else "short"),
-                "size": size,
-                "price": float(x["position"]["entryPx"]),
-                "margin_mode": (
-                    str(leverage.get("type")).lower()
-                    if isinstance(leverage, dict) and leverage.get("type")
-                    else None
-                ),
-                "margin_used": float(x["position"].get("marginUsed") or 0.0),
-            }
-            positions[(elm["symbol"], elm["position_side"])] = elm
+        core_raw = []
+        if unified_balance_shape:
+            core_raw, core_positions = await self._fetch_core_positions(include_raw=True)
+            for position in core_positions:
+                positions[(position["symbol"], position["position_side"])] = position
+        else:
+            core_raw = asset_positions
+            for x in asset_positions:
+                symbol = self.coin_to_symbol(x["position"]["coin"])
+                leverage = x["position"].get("leverage", {})
+                if isinstance(leverage, dict):
+                    self._record_hl_live_margin_mode(symbol, leverage.get("type"))
+                size = float(x["position"]["szi"])
+                elm = {
+                    "symbol": symbol,
+                    "position_side": ("long" if size > 0.0 else "short"),
+                    "size": size,
+                    "price": float(x["position"]["entryPx"]),
+                    "margin_mode": (
+                        str(leverage.get("type")).lower()
+                        if isinstance(leverage, dict) and leverage.get("type")
+                        else None
+                    ),
+                    "margin_used": float(x["position"].get("marginUsed") or 0.0),
+                }
+                if isinstance(leverage, dict) and leverage.get("value") is not None:
+                    elm["leverage"] = float(leverage["value"])
+                positions[(elm["symbol"], elm["position_side"])] = elm
         hip3_raw, hip3_positions = await self._fetch_hip3_positions(include_raw=True)
         for position in hip3_positions:
             positions[(position["symbol"], position["position_side"])] = position
-        balance = float(info["info"]["marginSummary"]["accountValue"]) - sum(
-            [float(x["position"]["unrealizedPnl"]) for x in info["info"]["assetPositions"]]
-        )
+        if unified_balance_shape:
+            balance_base = self._extract_balance_from_unified_payload(
+                info, balance_info, list(positions.values())
+            )
+        else:
+            balance_base = float(balance_info["marginSummary"]["accountValue"]) - sum(
+                [float(x["position"]["unrealizedPnl"]) for x in asset_positions]
+            )
+        position_margin = self._position_margin_to_restore_from_positions(list(positions.values()))
+        balance = balance_base + position_margin
+        self._hl_exchange_balance_includes_position_margin = bool(position_margin)
         raw_snapshot = {
             "balance": deepcopy(info),
             "positions": {
-                "core": deepcopy(info["info"].get("assetPositions", [])),
+                "core": deepcopy(core_raw),
                 "hip3": hip3_raw,
             },
         }
@@ -702,15 +796,44 @@ class HyperliquidBot(CCXTBot):
         return False
 
     def _position_margin_to_restore(self) -> float:
+        return self._position_margin_to_restore_from_positions(
+            getattr(self, "fetched_positions", [])
+        )
+
+    def _position_margin_to_restore_from_positions(self, positions: list[dict]) -> float:
         reserve = 0.0
-        for position in getattr(self, "fetched_positions", []):
+        for position in positions:
             symbol = str(position.get("symbol") or "")
             if not self._symbol_is_cross_hip3(symbol):
                 continue
             if abs(float(position.get("size") or 0.0)) <= 0.0:
                 continue
-            reserve += max(0.0, float(position.get("margin_used") or 0.0))
+            entry_margin = self._stable_cross_position_margin(position)
+            if entry_margin is not None:
+                reserve += entry_margin
+            else:
+                reserve += max(0.0, float(position.get("margin_used") or 0.0))
         return reserve
+
+    def _stable_cross_position_margin(self, position: dict) -> float | None:
+        """Return entry-price position margin.
+
+        Hyperliquid's HIP-3 `marginUsed` moves with mark price in cross mode. Feeding that
+        moving value back into wallet balance makes order sizing chase unrealized PnL and can
+        trigger cancel/repost churn. Entry notional divided by leverage is stable until the
+        position size or average entry changes.
+        """
+        symbol = str(position.get("symbol") or "")
+        try:
+            size = abs(float(position.get("size") or 0.0))
+            entry_price = float(position.get("price") or 0.0)
+            leverage = float(position.get("leverage") or self._calc_leverage_for_symbol(symbol))
+            c_mult = float(self.c_mults.get(symbol, 1.0) or 1.0)
+        except Exception:
+            return None
+        if size <= 0.0 or entry_price <= 0.0 or leverage <= 0.0:
+            return None
+        return max(0.0, size * entry_price * c_mult / leverage)
 
     def _reserved_margin_for_resting_order(self, order: dict) -> float:
         symbol = str(order.get("symbol") or "")
@@ -760,7 +883,11 @@ class HyperliquidBot(CCXTBot):
         exchange_reported = float(
             getattr(self, "_exchange_reported_balance_raw", self.get_raw_balance()) or 0.0
         )
-        reserve = self._position_margin_to_restore()
+        reserve = (
+            0.0
+            if getattr(self, "_hl_exchange_balance_includes_position_margin", False)
+            else self._position_margin_to_restore()
+        )
         if include_open_orders:
             # Do not feed bot-managed resting-order reserve back into published balance.
             # That reserve changes as the bot cancels/recreates entries and can create
