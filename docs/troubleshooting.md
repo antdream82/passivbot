@@ -89,6 +89,30 @@ Install the full profile:
 python3 -m pip install -e ".[full]"
 ```
 
+## Optimize exits right after loading cache and `/dev/shm` fills up
+
+If an optimization run prints a `resource_tracker` warning about leaked `shared_memory`
+objects and then exits soon after loading cached HLCV data, check for stale `psm_*`
+segments in `/dev/shm`:
+
+```bash
+ls -lah /dev/shm
+df -h /dev/shm
+```
+
+If the directory contains many old `psm_*` files and no optimizer or backtest
+processes are still running, those files are usually leftovers from a previous
+run that did not shut down cleanly.
+
+To clear them:
+
+```bash
+rm -f /dev/shm/psm_*
+```
+
+Recent optimizer builds also close evaluator shared-memory attachments more
+explicitly during shutdown, which helps prevent the leak from recurring.
+
 ## `passivbot_rust` missing or stale
 
 Activate the venv and rebuild the Rust extension:

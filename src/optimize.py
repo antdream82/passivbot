@@ -1083,9 +1083,19 @@ class Evaluator:
         return tuple(engine_scores), total_penalty
 
     def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def close(self):
         for attachment_map in self._attachments.values():
             for attachment in attachment_map.values():
-                attachment.close()
+                try:
+                    attachment.close()
+                except Exception:
+                    pass
+        self._attachments = {"hlcvs": {}, "btc": {}}
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -1388,17 +1398,24 @@ class SuiteEvaluator:
         return tuple(objectives), total_penalty, metrics_payload
 
     def __del__(self):
-        for ctx in self.contexts:
-            for attachment in ctx.attachments.get("hlcvs", {}).values():
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def close(self):
+        if hasattr(self.base, "close"):
+            try:
+                self.base.close()
+            except Exception:
+                pass
+        for attachment_map in self._master_attachments.values():
+            for attachment in attachment_map.values():
                 try:
                     attachment.close()
                 except Exception:
                     pass
-            for attachment in ctx.attachments.get("btc", {}).values():
-                try:
-                    attachment.close()
-                except Exception:
-                    pass
+        self._master_attachments = {"hlcvs": {}, "btc": {}}
 
 
 def add_extra_options(parser, *, help_all: bool):
@@ -2124,6 +2141,12 @@ async def main():
                 pool.join()
             except KeyboardInterrupt:
                 logging.info("Additional SIGINT received during pool join; continuing shutdown")
+        if "evaluator_for_pool" in locals() and hasattr(evaluator_for_pool, "close"):
+            logging.info("Closing evaluator shared-memory attachments...")
+            try:
+                evaluator_for_pool.close()
+            except Exception:
+                logging.exception("Failed to close evaluator shared-memory attachments")
         if manager is not None:
             logging.info("Shutting down multiprocessing manager...")
             try:
