@@ -10,13 +10,18 @@
 
 1. Risk gates and peak-sensitive logic should use `balance_raw`.
 2. Sizing/order-shaping logic may use snapped `balance` by design.
-3. Legacy test stubs may only provide `balance`; treat compatibility fallback as transitional.
+3. Entry TWEL gating is order-shaping logic. It should use snapped `balance`
+   so raw wallet noise does not repeatedly resize the final cropped entry.
+4. TWEL enforcer, realized-loss gates, peak/floor reconstruction, and other
+   close/risk paths should remain on `balance_raw`.
+5. Legacy test stubs may only provide `balance`; treat compatibility fallback as transitional.
 
 ## Test Focus
 
 1. Correct routing of raw vs snapped balance fields.
 2. Regression coverage for peak/risk drift scenarios.
-3. Explicit handling when `balance_raw` is missing/non-finite.
+3. Regression coverage that cropped entry TWEL gates use snapped balance.
+4. Explicit handling when `balance_raw` is missing/non-finite.
 
 ## Key Code
 

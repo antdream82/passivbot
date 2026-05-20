@@ -42,6 +42,10 @@ Start from `upstream/master`, then restore the following divergence packages:
    loops when Hyperliquid returns lagging open-order snapshots.
 8. Snapped-balance behavior used for sizing and orchestration must be
    preserved.
+   Rust entry TWEL gating is part of order shaping and must use the
+   hysteresis-snapped balance for the remaining cropped-entry budget. TWEL
+   enforcer/auto-reduce, realized-loss, and peak-sensitive risk paths must
+   continue to use raw balance.
    Hyperliquid HIP-3 cross-position margin restoration must use stable
    entry-price margin, not mark-moving `marginUsed`, so unrealized-PnL drift
    does not feed back into wallet balance sizing and order quantities.

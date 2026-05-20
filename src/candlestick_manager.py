@@ -2368,6 +2368,52 @@ class CandlestickManager:
         enhanced = self._get_known_gaps_enhanced(symbol)
         return [(g["start_ts"], g["end_ts"]) for g in enhanced]
 
+    def _get_archive_unavailable_days(self, symbol: str) -> Dict[str, Dict[str, Any]]:
+        """Return full-day archive misses that should not be retried every loop."""
+        idx = self._ensure_symbol_index(symbol, tf="1m")
+        raw = idx.get("meta", {}).get("archive_unavailable_days", {})
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, Dict[str, Any]] = {}
+        for day_key, meta in raw.items():
+            if not isinstance(meta, dict):
+                continue
+            try:
+                out[str(day_key)] = {
+                    "start_ts": int(meta.get("start_ts", 0)),
+                    "end_ts": int(meta.get("end_ts", 0)),
+                    "reason": str(meta.get("reason", GAP_REASON_NO_ARCHIVE)),
+                    "added_at": int(meta.get("added_at", 0)),
+                }
+            except Exception:
+                continue
+        return out
+
+    def _record_archive_day_unavailable(
+        self,
+        symbol: str,
+        day_key: str,
+        start_ts: int,
+        end_ts: int,
+        *,
+        reason: str = GAP_REASON_NO_ARCHIVE,
+    ) -> None:
+        """Remember an archive/tradfi miss without marking the span as a CCXT gap."""
+        idx = self._ensure_symbol_index(symbol, tf="1m")
+        meta = idx.setdefault("meta", {})
+        unavailable = meta.setdefault("archive_unavailable_days", {})
+        if not isinstance(unavailable, dict):
+            unavailable = {}
+            meta["archive_unavailable_days"] = unavailable
+        unavailable[str(day_key)] = {
+            "start_ts": int(start_ts),
+            "end_ts": int(end_ts),
+            "reason": str(reason),
+            "added_at": int(time.time() * 1000),
+        }
+        self._index[f"{symbol}::1m"] = idx
+        self._save_index(symbol, tf="1m")
+
     def _save_known_gaps_enhanced(self, symbol: str, gaps: List[GapEntry]) -> None:
         """Save gaps in enhanced format, merging overlapping ranges."""
         # Sort by start_ts
@@ -4538,6 +4584,7 @@ class CandlestickManager:
                 idx_shards = {}
         except Exception:
             idx_shards = {}
+        archive_unavailable_days = self._get_archive_unavailable_days(symbol)
 
         # Don't try to fetch archives for recent days - they don't exist yet
         # Exchanges typically need 48-72 hours to publish archive data
@@ -4552,6 +4599,7 @@ class CandlestickManager:
             "legacy_present": 0,
             "primary_complete": 0,
             "verified_from_disk": 0,  # Files verified by loading (no index metadata)
+            "archive_unavailable": 0,
         }
         for day_key, (day_start, day_end) in day_map.items():
             if start_ts > day_start or end_ts < day_end:
@@ -4563,6 +4611,9 @@ class CandlestickManager:
             if day_key in legacy_paths:
                 skipped_reasons["legacy_present"] += 1
                 continue  # legacy cache already covers this day
+            if day_key in archive_unavailable_days:
+                skipped_reasons["archive_unavailable"] += 1
+                continue  # archive/tradfi already returned no data for this full day
 
             # Only fetch archives for days missing or incomplete in primary.
             # NOTE: Previously we skipped any day with an existing primary shard path.
@@ -4765,6 +4816,14 @@ class CandlestickManager:
                         skipped += 1
                     elif result[1] is None or result[1].size == 0:
                         self._log("debug", "archive_day_unavailable", symbol=symbol, day=day_key)
+                        day_start, day_end = batch[i][1], batch[i][2]
+                        self._record_archive_day_unavailable(
+                            symbol,
+                            day_key,
+                            day_start,
+                            day_end,
+                            reason=GAP_REASON_NO_ARCHIVE,
+                        )
                         skipped += 1
                     else:
                         arr = result[1]
@@ -5218,7 +5277,7 @@ class CandlestickManager:
             archive_end_ts = min(end_finalized - 2 * 24 * 60 * ONE_MIN_MS, end_ts)
             if start_ts < archive_end_ts:
                 self._log(
-                    "info",
+                    "debug",
                     "large_span_archive_prefetch",
                     symbol=symbol,
                     span_minutes=int(span_minutes),

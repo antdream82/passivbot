@@ -15,6 +15,14 @@ All notable user-facing changes will be documented in this file.
 - Hyperliquid corrected balance is now produced before hysteresis is applied, so
   unifiedAccount payloads that omit position margin no longer reset the snap
   anchor to the lower exchange-reported token balance on every refresh.
+- Rust entry TWEL gating now uses hysteresis-snapped balance for the remaining
+  entry budget while keeping TWEL enforcer/risk paths on raw balance. This
+  prevents tiny raw-balance drift from repeatedly resizing the final cropped
+  grid entry order.
+- Live candle archive prefetch now remembers full-day archive/TradFi misses and
+  suppresses repeated INFO-level large-span prefetch logs, preventing stock-perp
+  no-data days from spamming `yfinance not installed` / zero-candle warmup logs
+  every execution loop.
 - Changed the HSL config default `live.hsl_signal_mode` to `unified`, making account-level strategy drawdown the canonical HSL signal while keeping `pside` available for side-local HSL tuning, and clarified that HSL RED waits for all positions on that side to be fully closed rather than waiting for PnL recovery.
 - Added `passivbot tool merge-paretos` for combining two or more Pareto run/front directories into capped long/short starting-config sets.
 - Changed optimizer `fixed_params` and `--fine_tune_params` from exact-only bounds keys to literal bounds-key selectors, with sorted multi-line logs showing each selector expansion and the resulting fixed/tunable bounds.
@@ -145,7 +153,7 @@ All notable user-facing changes will be documented in this file.
 ## v7.8.4 - 2026-03-06
 
 ### Changed
-- **Dual balance routing (raw vs hysteresis-snapped)** - Live and orchestrator flows now carry both `balance_raw` (raw wallet balance) and `balance` (hysteresis-snapped balance). Sizing/order-shaping paths use snapped balance, while risk/accounting paths use raw balance (including realized-loss gate peak/floor checks, TWEL entry/auto-reduce gating, and auto-unstuck allowance calculations). This applies consistently across live and backtest via Rust orchestrator input.
+- **Dual balance routing (raw vs hysteresis-snapped)** - Live and orchestrator flows now carry both `balance_raw` (raw wallet balance) and `balance` (hysteresis-snapped balance). Sizing/order-shaping paths use snapped balance, including entry TWEL gating for cropped final entries, while risk/accounting paths use raw balance (including realized-loss gate peak/floor checks, TWEL auto-reduce/enforcer gating, and auto-unstuck allowance calculations). This applies consistently across live and backtest via Rust orchestrator input.
 - **WEL denominator behavior split by mode** - Live now uses a hard fixed denominator for per-symbol WEL (`total_wallet_exposure_limit / config.bot.{pside}.n_positions`), removing runtime denominator drift from open-position count. Backtests now expose `backtest.dynamic_wel_by_tradability` (default `true`): when enabled, WEL uses tradability-aware denominator growth (`min(n_positions, n_tradable_max)`) based on coins with real candles, and does not shrink after delistings; when disabled, backtests use the same fixed denominator as live.
 - **Bulk price fetch for Hyperliquid** - `calc_ideal_orders` now uses a single `allMids` API call to get prices for all symbols instead of individual `get_current_close` calls per symbol (1 call vs ~70). Falls back to per-symbol fetches for non-Hyperliquid exchanges or on error.
 - **Sequential margin mode setting for Hyperliquid** - Margin mode and leverage API calls are now sequential with a small delay instead of being fired in parallel, reducing API burst on coin changes.

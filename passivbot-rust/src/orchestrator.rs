@@ -2677,7 +2677,7 @@ mod core {
             }
             gate_entries_by_twel_deterministic(
                 PositionSide::Long,
-                input_balance_raw(input),
+                input.balance,
                 input
                     .global
                     .global_bot_params
@@ -2711,7 +2711,7 @@ mod core {
             }
             gate_entries_by_twel_deterministic(
                 PositionSide::Short,
-                input_balance_raw(input),
+                input.balance,
                 input
                     .global
                     .global_bot_params
@@ -4197,11 +4197,12 @@ mod core {
         }
 
         #[test]
-        fn twel_entry_gate_uses_balance_raw_not_snapped() {
+        fn twel_entry_gate_uses_snapped_balance_not_raw() {
             // Scenario: no position, TWEL = 0.01 ($10 budget), entry qty*price = $20.
-            // With snapped balance = 1000: budget = $10, entry $20 gets trimmed/gated.
-            // With raw balance = 500: budget = $5, entry $20 gets trimmed even more.
-            // Verify the gating uses raw by checking the resulting entry qty.
+            // With snapped balance = 1000: budget = $10.
+            // With raw balance = 500: budget = $5.
+            // Entry gating uses snapped balance so small raw balance noise does not churn
+            // the final cropped entry order.
             let mut sym = make_basic_symbol(0);
             sym.order_book = OrderBook {
                 bid: 100.0,
@@ -4218,8 +4219,8 @@ mod core {
             global_bp.long.total_wallet_exposure_limit = 0.01;
             global_bp.long.n_positions = 1;
 
-            // With raw balance 500: TWEL budget = 500*0.01 = $5, so max qty = 5/100 = 0.05
-            // With snapped balance 1000: TWEL budget = 1000*0.01 = $10, so max qty = 10/100 = 0.1
+            // With snapped balance 1000: TWEL budget = 1000*0.01 = $10, so max qty = 10/100 = 0.1.
+            // With raw balance 500: TWEL budget would be $5, but it must not be used here.
             let input = OrchestratorInput {
                 balance: 1000.0,
                 balance_raw: 500.0,
@@ -4254,11 +4255,15 @@ mod core {
                 })
                 .collect();
             if !entry_orders.is_empty() {
-                // If entries exist, their total cost must fit within raw balance budget ($5)
                 let total_cost: f64 = entry_orders.iter().map(|o| o.qty * o.price).sum();
                 assert!(
-                    total_cost <= 500.0 * 0.01 + 1e-6,
-                    "Entry cost {:.4} should be gated by raw balance budget (500*0.01=5), not snapped (1000*0.01=10)",
+                    total_cost > 500.0 * 0.01 + 1e-6,
+                    "Entry cost {:.4} should not be gated by raw balance budget (500*0.01=5)",
+                    total_cost
+                );
+                assert!(
+                    total_cost <= 1000.0 * 0.01 + 1e-6,
+                    "Entry cost {:.4} should fit snapped balance budget (1000*0.01=10)",
                     total_cost
                 );
             }

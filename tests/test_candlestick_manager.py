@@ -623,6 +623,42 @@ async def test_gateio_partial_1m_window_clips_fetch_to_recent_limit(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_archive_prefetch_remembers_unavailable_full_days(monkeypatch, tmp_path):
+    fixed_now_ms = 1725590400000  # 2024-09-06 00:00:00 UTC
+    monkeypatch.setattr("time.time", lambda: fixed_now_ms / 1000.0)
+
+    class _Ex:
+        id = "hyperliquid"
+
+    cm = CandlestickManager(
+        exchange=_Ex(),
+        exchange_name="hyperliquid",
+        cache_dir=str(tmp_path / "caches"),
+        archive_enabled=True,
+    )
+    symbol = "XYZ-XYZ100/USDC:USDC"
+    calls = []
+
+    async def fake_archive_fetch_day(symbol_, day_key):
+        calls.append((symbol_, day_key))
+        return np.empty((0,), dtype=CANDLE_DTYPE)
+
+    monkeypatch.setattr(cm, "_archive_fetch_day", fake_archive_fetch_day)
+
+    day_start = 1722470400000  # 2024-08-01 00:00:00 UTC
+    day_end = day_start + (1440 - 1) * ONE_MIN_MS
+
+    await cm._prefetch_archives_for_range(symbol, day_start, day_end)
+    await cm._prefetch_archives_for_range(symbol, day_start, day_end)
+
+    assert calls == [(symbol, "2024-08-01")]
+    unavailable = cm._get_archive_unavailable_days(symbol)
+    assert unavailable["2024-08-01"]["start_ts"] == day_start
+    assert unavailable["2024-08-01"]["end_ts"] == day_end
+    assert unavailable["2024-08-01"]["reason"] == GAP_REASON_NO_ARCHIVE
+
+
+@pytest.mark.asyncio
 async def test_get_current_close_uses_ttl(monkeypatch):
     fixed_now_ms = 1725590400000
     monkeypatch.setattr("time.time", lambda: fixed_now_ms / 1000.0)
