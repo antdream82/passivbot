@@ -16,6 +16,7 @@ from suite_runner import (
     extract_suite_config,
     filter_coins_by_exchange_assignment,
     resolve_coin_sources,
+    run_backtest_suite_async,
     _prepare_dataset_subset,
     _run_combined_dataset,
     summarize_scenario_metrics,
@@ -436,3 +437,110 @@ def test_run_combined_dataset_passes_payload_timestamps_to_post_process(tmp_path
     np.testing.assert_array_equal(seen["plot_context"].timestamps, timestamps)
     np.testing.assert_array_equal(seen["plot_context"].hlcvs, hlcvs)
     assert seen["plot_context"].hard_stop_plot_data == {"sample": True}
+
+
+@pytest.mark.asyncio
+async def test_run_backtest_suite_async_reloads_normalized_base_coins(monkeypatch, tmp_path):
+    base_config = {
+        "backtest": {
+            "start_date": "2021-01-01",
+            "end_date": "2021-01-31",
+            "exchanges": ["hyperliquid"],
+            "base_dir": str(tmp_path / "backtests"),
+        },
+        "live": {
+            "approved_coins": {"long": ["XYZ-XYZ100"], "short": ["XYZ-SP500"]},
+            "ignored_coins": {"long": [], "short": []},
+        },
+    }
+    suite_cfg = {
+        "scenarios": [{"label": "base"}],
+        "aggregate": {"default": "mean"},
+        "exchanges": ["hyperliquid"],
+    }
+    normalized_coins = ["xyz:SP500", "xyz:XYZ"]
+    seen = {}
+
+    async def fake_load_markets(*args, **kwargs):
+        return None
+
+    async def fake_format_approved_ignored_coins(config, exchanges, verbose=False, quote=None):
+        config["live"]["approved_coins"] = {
+            "long": [normalized_coins[1]],
+            "short": [normalized_coins[0]],
+        }
+        config["live"]["ignored_coins"] = {"long": [], "short": []}
+
+    async def fake_prepare_master_datasets(*args, **kwargs):
+        dataset = ExchangeDataset(
+            exchange="combined",
+            coins=normalized_coins,
+            coin_index={coin: idx for idx, coin in enumerate(normalized_coins)},
+            coin_exchange={coin: "combined" for coin in normalized_coins},
+            available_exchanges=["combined"],
+            hlcvs=np.zeros((1, len(normalized_coins), 4), dtype=np.float64),
+            mss={coin: {} for coin in normalized_coins},
+            btc_usd_prices=np.ones(1, dtype=np.float64),
+            timestamps=np.array([0], dtype=np.int64),
+            cache_dir=str(tmp_path / "cache"),
+        )
+        return {"combined": dataset}
+
+    def fake_apply_scenario(
+        config,
+        scenario,
+        master_coins,
+        master_ignored,
+        available_exchanges,
+        available_coins,
+        base_coin_sources=None,
+        *,
+        base_coins=None,
+        base_ignored=None,
+        quiet=False,
+    ):
+        seen["base_coins"] = list(base_coins or [])
+        seen["base_ignored"] = list(base_ignored or [])
+        scenario_coins = list(base_coins or [])
+        scenario_config = {
+            "backtest": {
+                "coins": {"combined": scenario_coins},
+                "exchanges": ["combined"],
+                "cache_dir": {},
+            },
+            "live": {
+                "approved_coins": {"long": scenario_coins, "short": scenario_coins},
+                "ignored_coins": {"long": [], "short": []},
+            },
+            "_transform_log": [],
+        }
+        return scenario_config, scenario_coins
+
+    async def fake_run_backtest_scenario(*args, **kwargs):
+        scenario = args[0]
+        return ScenarioResult(
+            scenario=scenario,
+            per_exchange={"combined": {"stats": {}}},
+            metrics={"stats": {}},
+            elapsed_seconds=0.0,
+            output_path=tmp_path / scenario.label,
+        )
+
+    monkeypatch.setattr("suite_runner.load_markets", fake_load_markets)
+    monkeypatch.setattr(
+        "suite_runner.format_approved_ignored_coins", fake_format_approved_ignored_coins
+    )
+    monkeypatch.setattr("suite_runner.prepare_master_datasets", fake_prepare_master_datasets)
+    monkeypatch.setattr("suite_runner.apply_scenario", fake_apply_scenario)
+    monkeypatch.setattr("suite_runner.run_backtest_scenario", fake_run_backtest_scenario)
+
+    summary = await run_backtest_suite_async(
+        deepcopy(base_config),
+        suite_cfg,
+        disable_plotting=True,
+        suite_output_root=tmp_path / "suite",
+    )
+
+    assert seen["base_coins"] == normalized_coins
+    assert seen["base_ignored"] == []
+    assert len(summary.scenarios) == 1

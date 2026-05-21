@@ -58,6 +58,27 @@ config = {
 ```
 **Expected:** Suite mode with 1 scenario using combined data from binance+bybit.
 
+#### TC1.2a: Base scenario keeps normalized inherited coins
+```python
+config = {
+    "backtest": {
+        "exchanges": ["hyperliquid"],
+        "scenarios": [
+            {"label": "base"}
+        ]
+    },
+    "live": {
+        "approved_coins": {
+            "long": ["XYZ-XYZ100"],
+            "short": ["XYZ-SP500"]
+        }
+    }
+}
+```
+**Expected:** Suite mode re-reads approved coins after market formatting, so the
+base scenario uses the normalized dataset coin ids instead of crashing with
+`Scenario base has no usable coins.`
+
 #### TC1.3: Single scenario with explicit single exchange
 ```python
 config = {

@@ -1430,11 +1430,8 @@ async def run_backtest_suite_async(
     suite_output_root: Optional[Path] = None,
 ) -> SuiteSummary:
     base_exchanges = require_config_value(config, "backtest.exchanges")
-
     base_start = require_config_value(config, "backtest.start_date")
     base_end = require_config_value(config, "backtest.end_date")
-    base_coins = _flatten_coin_list(require_live_value(config, "approved_coins"))
-    base_ignored = _flatten_coin_list(require_live_value(config, "ignored_coins"))
 
     scenarios, aggregate_cfg = build_scenarios(suite_cfg, base_exchanges=base_exchanges)
 
@@ -1455,6 +1452,11 @@ async def run_backtest_suite_async(
     for exchange in exchanges_list:
         await load_markets(exchange, verbose=False)
     await format_approved_ignored_coins(config, exchanges_list, verbose=False)
+
+    # Re-read the approved/ignored lists after formatting so suite defaults use the
+    # normalized coin identifiers that match the prepared datasets.
+    base_coins = _flatten_coin_list(require_live_value(config, "approved_coins"))
+    base_ignored = _flatten_coin_list(require_live_value(config, "ignored_coins"))
 
     suite_coin_sources = collect_suite_coin_sources(config, scenarios)
 

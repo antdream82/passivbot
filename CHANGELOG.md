@@ -4,6 +4,11 @@ All notable user-facing changes will be documented in this file.
 
 ## Unreleased
 
+- Fixed backtest suite mode so base scenarios re-read approved/ignored coins after
+  `format_approved_ignored_coins()`. This prevents raw coin labels from being
+  filtered out against normalized dataset coins and crashing with
+  `Scenario base has no usable coins.` on suite runs that rely on inherited
+  default coins.
 - Hyperliquid unifiedAccount balance refresh now handles balance payloads without
   `info.assetPositions` by fetching positions separately, while non-unified
   accounts still fail loudly instead of crashing with a raw `KeyError`. Stock-perp

@@ -186,6 +186,11 @@ Start from `upstream/master`, then restore the following divergence packages:
    backtest coin order shrinks after side gating, payload construction must
    subset the OHLCV tensor to the active coin order before building the Rust
    bundle.
+10. Backtest suite base scenarios must re-read approved/ignored coins after
+    `format_approved_ignored_coins()` so inherited defaults use normalized
+    dataset coin identifiers. Without that refresh, raw labels such as
+    `XYZ-XYZ100` can be filtered out against normalized dataset coins and the
+    suite aborts with `Scenario base has no usable coins.`
 
 ### Notes
 
@@ -602,6 +607,8 @@ current production workflows stable:
 6. Scenario-aware limits trigger in real optimize execution.
 7. Historical seed configs load without obsolete-bound failures.
 8. Hyperliquid live startup completes without symbol-mapping regressions.
+9. Suite base scenarios survive coin normalization and do not fail with
+   `Scenario base has no usable coins.`
 
 ## Status
 
