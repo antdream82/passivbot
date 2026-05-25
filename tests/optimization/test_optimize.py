@@ -1601,13 +1601,13 @@ class TestEvaluator:
         )
 
         assert [check["metric_key"] for check in base.limit_checks] == [
-            "adg_strategy_eq_mean",
-            "peak_recovery_hours_strategy_eq_mean",
+            "adg_strategy_eq_min",
+            "peak_recovery_hours_strategy_eq_max",
         ]
 
         _suite = SuiteEvaluator(base, [], {"default": "mean", "peak_recovery_hours_hsl": "mean"})
         assert [check["metric_key"] for check in base.limit_checks] == [
-            "adg_strategy_eq_mean",
+            "adg_strategy_eq_min",
             "peak_recovery_hours_strategy_eq_mean",
         ]
 
