@@ -186,6 +186,47 @@ def test_apply_scenario_records_transform_log():
     assert any(change["path"] == "backtest.start_date" for change in entry["details"]["changes"])
 
 
+def test_apply_scenario_preserves_side_specific_approved_coins_for_base_case():
+    base_config = {
+        "backtest": {
+            "start_date": "2021-01-01",
+            "end_date": "2021-01-31",
+            "coins": {},
+            "cache_dir": {},
+            "exchanges": ["binance"],
+        },
+        "live": {
+            "approved_coins": {"long": ["BTC"], "short": ["ETH"]},
+            "ignored_coins": {"long": [], "short": ["SOL"]},
+        },
+    }
+    scenario = SuiteScenario(
+        label="base",
+        start_date=None,
+        end_date=None,
+        coins=None,
+        ignored_coins=None,
+    )
+
+    cfg, coins = apply_scenario(
+        base_config,
+        scenario,
+        master_coins=["BTC", "ETH"],
+        master_ignored=["SOL"],
+        available_exchanges=["binance"],
+        available_coins={"BTC", "ETH", "SOL"},
+        base_coin_sources={},
+        base_coins=["BTC", "ETH"],
+        base_ignored=["SOL"],
+    )
+
+    assert coins == ["BTC", "ETH"]
+    assert cfg["live"]["approved_coins"]["long"] == ["BTC"]
+    assert cfg["live"]["approved_coins"]["short"] == ["ETH"]
+    assert cfg["live"]["ignored_coins"]["long"] == []
+    assert cfg["live"]["ignored_coins"]["short"] == ["SOL"]
+
+
 def test_apply_scenario_overrides_update_config():
     base_config = {
         "backtest": {
