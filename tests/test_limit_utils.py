@@ -78,7 +78,7 @@ def test_disabled_limit_entry_is_skipped():
     assert checks == []
 
 
-def test_omitted_stat_uses_aggregate_default_instead_of_operator_direction():
+def test_omitted_stat_uses_operator_direction_when_no_metric_override():
     entry = {"metric": "adg", "penalize_if": "less_than_or_equal", "value": 0.001}
     checks = expand_limit_checks(
         [entry],
@@ -86,8 +86,8 @@ def test_omitted_stat_uses_aggregate_default_instead_of_operator_direction():
         penalty_weight=1000.0,
         aggregate_cfg={"default": "mean"},
     )
-    assert checks[0]["stat"] == "mean"
-    assert checks[0]["metric_key"] == "adg_mean"
+    assert checks[0]["stat"] == "min"
+    assert checks[0]["metric_key"] == "adg_min"
 
 
 def test_omitted_stat_uses_metric_specific_aggregate_override():

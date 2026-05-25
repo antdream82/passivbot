@@ -52,6 +52,7 @@ def test_evaluator_returns_weighted_metric_when_within_limits():
     stats = {
         "drawdown_worst_max": 0.2,
         "adg_mean": 0.002,
+        "adg_min": 0.002,
         "loss_profit_ratio_mean": 0.3,
         "omega_ratio_mean": 1.8,
     }
@@ -110,7 +111,7 @@ def test_missing_limit_metric_raises_instead_of_passing():
 
     with pytest.raises(
         ValueError,
-        match="missing optimizer limit metric 'fills_gap_p99_hours_mean'",
+        match="missing optimizer limit metric 'fills_gap_p99_hours_max'",
     ):
         evaluator.calc_fitness({"adg_mean": 0.001})
 
@@ -126,7 +127,7 @@ def test_missing_scoring_metric_raises_instead_of_zeroing():
         evaluator.calc_fitness({"adg_mean": 0.001})
 
 
-def test_fill_gap_limit_uses_aggregate_default_stat():
+def test_fill_gap_limit_uses_operator_direction_stat():
     limits = [
         {
             "metric": "fills_gap_p99_hours",
@@ -139,6 +140,7 @@ def test_fill_gap_limit_uses_aggregate_default_stat():
     stats = {
         "adg_mean": 0.001,
         "fills_gap_p99_hours_mean": 73.0,
+        "fills_gap_p99_hours_max": 73.0,
     }
 
     scores, penalty = evaluator.calc_fitness(stats)

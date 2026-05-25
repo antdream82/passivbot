@@ -484,7 +484,32 @@ def resolve_limit_stat(
                 f"Expected one of {sorted(SUPPORTED_LIMIT_STATS)}."
             )
         return resolved
-    return resolve_aggregate_mode(metric, aggregate_cfg)
+
+    mode = str(entry.get("penalize_if") or "greater_than").strip().lower()
+    if mode in {"greater_than", "greater_than_or_equal"}:
+        fallback = "max"
+    elif mode in {"less_than", "less_than_or_equal"}:
+        fallback = "min"
+    else:
+        fallback = "mean"
+
+    if aggregate_cfg:
+        normalized_aggregate_cfg = {
+            canonical_metric_name(str(key)): value for key, value in aggregate_cfg.items()
+        }
+        override = normalized_aggregate_cfg.get(metric)
+        if override is None and "_" in metric:
+            override = normalized_aggregate_cfg.get(metric.rsplit("_", 1)[0])
+        if override is not None:
+            resolved = str(override).strip().lower()
+            if resolved not in SUPPORTED_LIMIT_STATS:
+                raise ValueError(
+                    f"Unsupported aggregate mode '{resolved}' for metric '{metric}'. "
+                    f"Expected one of {sorted(SUPPORTED_LIMIT_STATS)}."
+                )
+            return resolved
+
+    return fallback
 
 
 def _resolve_optimize_limits_for_load(
