@@ -852,6 +852,62 @@ class TestHyperliquidBotHIP3:
         assert bot.cca.fetch_open_orders.await_args_list[0].kwargs == {"symbol": None}
         assert bot.cca.fetch_open_orders.await_args_list[1].kwargs == {"params": {"dex": "xyz"}}
 
+    @pytest.mark.asyncio
+    async def test_fetch_open_orders_suppresses_recent_cancel_gone_ids(self, bot_class):
+        bot = object.__new__(bot_class)
+        bot.HIP3_PREFIX = bot_class.HIP3_PREFIX
+        bot.HIP3_ALT_PREFIXES = bot_class.HIP3_ALT_PREFIXES
+        bot.CANCEL_GONE_SUPPRESS_MS = 15_000
+        bot.CANCEL_GONE_MARKER_MAX_AGE_MS = 60_000
+        bot.active_symbols = []
+        bot.open_orders = {}
+        bot.positions = {}
+        bot.markets_dict = {}
+        bot.symbol_ids_inv = {"@107": "XYZ-XYZ100/USDC:USDC"}
+        bot.determine_pos_side = lambda order: "long"
+        bot._diag_cancel_gone_orders = {("XYZ-XYZ100/USDC:USDC", "335406020602"): 195_000}
+        bot.cca = MagicMock()
+        bot.cca.fetch_open_orders = AsyncMock(
+            return_value=[
+                {
+                    "id": "335406020602",
+                    "symbol": "@107",
+                    "side": "buy",
+                    "amount": 0.0009,
+                    "price": 24980.0,
+                    "timestamp": 1000,
+                }
+            ]
+        )
+
+        from exchanges import hyperliquid as hyperliquid_module
+
+        original_utc_ms = hyperliquid_module.utc_ms
+        hyperliquid_module.utc_ms = lambda: 200_000
+        try:
+            orders = await bot.fetch_open_orders()
+        finally:
+            hyperliquid_module.utc_ms = original_utc_ms
+
+        assert orders == []
+
+    @pytest.mark.asyncio
+    async def test_execute_cancellation_marks_and_removes_cancel_gone_order(self, bot_class):
+        bot = object.__new__(bot_class)
+        bot.user_info = {"is_vault": False}
+        bot.open_orders = {"BTC/USDC:USDC": [{"id": "1"}, {"id": "2"}]}
+        bot._diag_cancel_gone_orders = {}
+        bot._save_cancel_gone_tombstones = lambda: None
+        bot.cca = MagicMock()
+        bot.cca.cancel_order = AsyncMock(side_effect=Exception("Order was never placed"))
+
+        result = await bot.execute_cancellation({"id": "1", "symbol": "BTC/USDC:USDC"})
+
+        assert result["status"] == "success"
+        assert result["_passivbot_cancel_requires_full_authoritative_confirmation"] is True
+        assert bot.open_orders["BTC/USDC:USDC"] == [{"id": "2"}]
+        assert ("BTC/USDC:USDC", "1") in bot._diag_cancel_gone_orders
+
 
 class TestIsolatedMarginLeverageCapping:
     """Tests for isolated margin leverage capping."""

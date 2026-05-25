@@ -37,6 +37,7 @@ CURRENCY_METRICS = {
     "exponential_fit_error",
     "exponential_fit_error_w",
     "gain",
+    "gain_over_ui",
     "gain_per_actual_exposure",
     "gain_per_actual_exposure_long",
     "gain_per_actual_exposure_short",
@@ -66,9 +67,11 @@ CURRENCY_METRICS = {
     "sortino_ratio_w",
     "sterling_ratio",
     "sterling_ratio_w",
+    "ulcer_index",
 }
 
 SHARED_METRICS = {
+    "adg_over_ui",
     "positions_held_per_day",
     "positions_held_per_day_w",
     "position_held_hours_mean",
