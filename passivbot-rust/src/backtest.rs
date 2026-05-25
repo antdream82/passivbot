@@ -772,7 +772,7 @@ impl<'a> Backtest<'a> {
 
         let balance = self.balance.usd_total_balance_rounded;
         let balance_raw = self.balance.usd_total_balance;
-        let (effective_cumsum_max, effective_cumsum_last) = self.effective_pnl_cumsum(k);
+        let (unstuck_cumsum_max, unstuck_cumsum_last) = self.unstuck_pnl_cumsum();
         let allowance = match side {
             LONG => {
                 if self.bot_params_master.long.unstuck_loss_allowance_pct > 0.0 {
@@ -780,8 +780,8 @@ impl<'a> Backtest<'a> {
                         balance_raw,
                         self.bot_params_master.long.unstuck_loss_allowance_pct
                             * self.bot_params_master.long.total_wallet_exposure_limit,
-                        effective_cumsum_max,
-                        effective_cumsum_last,
+                        unstuck_cumsum_max,
+                        unstuck_cumsum_last,
                     )
                 } else {
                     0.0
@@ -793,8 +793,8 @@ impl<'a> Backtest<'a> {
                         balance_raw,
                         self.bot_params_master.short.unstuck_loss_allowance_pct
                             * self.bot_params_master.short.total_wallet_exposure_limit,
-                        effective_cumsum_max,
-                        effective_cumsum_last,
+                        unstuck_cumsum_max,
+                        unstuck_cumsum_last,
                     )
                 } else {
                     0.0
@@ -1010,14 +1010,15 @@ impl<'a> Backtest<'a> {
         let balance = self.balance.usd_total_balance_rounded;
         let balance_raw = self.balance.usd_total_balance;
         let (effective_cumsum_max, effective_cumsum_last) = self.effective_pnl_cumsum(k);
+        let (unstuck_cumsum_max, unstuck_cumsum_last) = self.unstuck_pnl_cumsum();
 
         let long_allowance = if self.bot_params_master.long.unstuck_loss_allowance_pct > 0.0 {
             calc_auto_unstuck_allowance(
                 balance_raw,
                 self.bot_params_master.long.unstuck_loss_allowance_pct
                     * self.bot_params_master.long.total_wallet_exposure_limit,
-                effective_cumsum_max,
-                effective_cumsum_last,
+                unstuck_cumsum_max,
+                unstuck_cumsum_last,
             )
         } else {
             0.0
@@ -1027,8 +1028,8 @@ impl<'a> Backtest<'a> {
                 balance_raw,
                 self.bot_params_master.short.unstuck_loss_allowance_pct
                     * self.bot_params_master.short.total_wallet_exposure_limit,
-                effective_cumsum_max,
-                effective_cumsum_last,
+                unstuck_cumsum_max,
+                unstuck_cumsum_last,
             )
         } else {
             0.0
@@ -1285,14 +1286,15 @@ impl<'a> Backtest<'a> {
 
         let balance_raw = input.balance_raw;
         let (effective_cumsum_max, effective_cumsum_last) = self.effective_pnl_cumsum(k);
+        let (unstuck_cumsum_max, unstuck_cumsum_last) = self.unstuck_pnl_cumsum();
         input.global.unstuck_allowance_long =
             if self.bot_params_master.long.unstuck_loss_allowance_pct > 0.0 {
                 calc_auto_unstuck_allowance(
                     balance_raw,
                     self.bot_params_master.long.unstuck_loss_allowance_pct
                         * self.bot_params_master.long.total_wallet_exposure_limit,
-                    effective_cumsum_max,
-                    effective_cumsum_last,
+                    unstuck_cumsum_max,
+                    unstuck_cumsum_last,
                 )
             } else {
                 0.0
@@ -1303,8 +1305,8 @@ impl<'a> Backtest<'a> {
                     balance_raw,
                     self.bot_params_master.short.unstuck_loss_allowance_pct
                         * self.bot_params_master.short.total_wallet_exposure_limit,
-                    effective_cumsum_max,
-                    effective_cumsum_last,
+                    unstuck_cumsum_max,
+                    unstuck_cumsum_last,
                 )
             } else {
                 0.0
@@ -2399,6 +2401,14 @@ impl<'a> Backtest<'a> {
             let rolling_current = self.pnl_cumsum_running - base_abs_cumsum;
             return (rolling_peak, rolling_current);
         }
+        (self.pnl_cumsum_max, self.pnl_cumsum_running)
+    }
+
+    #[inline]
+    fn unstuck_pnl_cumsum(&self) -> (f64, f64) {
+        // Keep unstuck allowance tied to full realized PnL history. Rolling lookback is
+        // reserved for recent-risk gates such as HSL/realized-loss checks; applying it
+        // to unstuck materially changes legacy position-management behavior.
         (self.pnl_cumsum_max, self.pnl_cumsum_running)
     }
 
@@ -7139,7 +7149,7 @@ mod tests {
     }
 
     #[test]
-    fn rolling_pnl_window_expiry_restores_unstuck_allowance_after_stale_peak_ages_out() {
+    fn unstuck_allowance_ignores_rolling_pnl_window_expiry() {
         let hlcvs = Array3::from_shape_vec((4, 1, 4), vec![1.0; 4 * 1 * 4]).unwrap();
         let btc_usd_prices = Array1::from_vec(vec![20_000.0; 4]);
 
@@ -7197,7 +7207,7 @@ mod tests {
         let input1 = bt.get_orchestrator_input_cached(1, None, None);
         assert!(
             input1.global.unstuck_allowance_long.abs() < 1e-12,
-            "expected stale positive peak to suppress allowance while still in-window"
+            "expected full-history positive peak to suppress allowance"
         );
 
         let input2 = bt.get_orchestrator_input_cached(2, None, None);
@@ -7210,8 +7220,8 @@ mod tests {
             "expected rolling current pnl to keep only the still-active fill"
         );
         assert!(
-            (input2.global.unstuck_allowance_long - 20.0).abs() < 1e-12,
-            "expected allowance to recover once the stale peak ages out"
+            input2.global.unstuck_allowance_long.abs() < 1e-12,
+            "unstuck allowance should remain anchored to full PnL history even after rolling window expiry"
         );
     }
 
@@ -7475,14 +7485,6 @@ mod tests {
                 k,
                 expected,
                 actual
-            );
-            let input = bt.get_orchestrator_input_cached(k, None, None);
-            let expected_allowance =
-                calc_auto_unstuck_allowance(1000.0, 0.01, expected.0, expected.1);
-            assert!(
-                (input.global.unstuck_allowance_long - expected_allowance).abs() < 1e-12,
-                "expected unstuck allowance at k={} to match live-style reference",
-                k
             );
         }
     }

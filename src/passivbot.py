@@ -2543,7 +2543,7 @@ class Passivbot:
         if self._pnls_manager is None:
             return {"status": "no_pnl_manager"}
 
-        events = self._get_effective_pnl_events()
+        events = self._pnls_manager.get_events()
         if not events:
             return {"status": "no_history"}
         self._assert_no_pending_pnl_events(
@@ -8314,11 +8314,11 @@ class Passivbot:
             )
 
     def _calc_unstuck_allowances(self, allow_new_unstuck: bool) -> dict[str, float]:
-        """Calculate unstuck allowances using FillEventsManager data."""
+        """Calculate unstuck allowances using full realized PnL history."""
         if not allow_new_unstuck or self._pnls_manager is None:
             return {"long": 0.0, "short": 0.0}
 
-        events = self._get_effective_pnl_events()
+        events = self._pnls_manager.get_events()
         if not events:
             return {"long": 0.0, "short": 0.0}
         self._assert_no_pending_pnl_events(
