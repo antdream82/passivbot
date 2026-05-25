@@ -168,3 +168,30 @@ def test_fill_gap_limit_honors_explicit_max_stat():
 
     assert pytest.approx(scores[0]) == (73.0 - 72.0) * 1e6
     assert pytest.approx(penalty) == (73.0 - 72.0) * 1e6
+
+
+def test_scenario_limit_uses_suite_metric_payload():
+    limits = [
+        {
+            "metric": "drawdown_worst_usd",
+            "scenario": "stress",
+            "penalize_if": "greater_than",
+            "value": 0.25,
+        }
+    ]
+    cfg = _make_config(limits)
+    evaluator = Evaluator({}, {}, {}, cfg)
+
+    scores, penalty = evaluator.calc_fitness(
+        {"adg_mean": 0.002},
+        suite_metrics={
+            "metrics": {
+                "drawdown_worst_usd": {
+                    "scenarios": {"base": 0.10, "stress": 0.30},
+                }
+            }
+        },
+    )
+
+    assert pytest.approx(scores[0]) == (0.30 - 0.25) * 1e6
+    assert pytest.approx(penalty) == (0.30 - 0.25) * 1e6

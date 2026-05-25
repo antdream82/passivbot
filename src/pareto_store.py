@@ -43,6 +43,7 @@ class LimitSpec:
     field: str  # "mean", "min", "max", "std", or "auto"
     op: Callable[[float, float], bool]
     value: float
+    scenario: str = ""
 
 
 def _split_metric_field(raw_key: str) -> tuple[str, str]:
@@ -62,6 +63,7 @@ def _resolve_metric_name(metric: str, metric_map: Dict[str, str]) -> str:
 
 def _resolve_limit_value(
     spec: LimitSpec,
+    entry: Dict[str, Any],
     stats_flat: Dict[str, float],
     aggregated_values: Dict[str, float],
     objectives: Dict[str, float],
@@ -75,6 +77,17 @@ def _resolve_limit_value(
     value = resolve_metric_value(objectives, resolved_metric)
     if value is not None:
         return value
+    if spec.scenario:
+        suite_metrics = (entry.get("suite_metrics") or {}).get("metrics") or {}
+        payload = suite_metrics.get(resolved_metric) or {}
+        scenario_values = payload.get("scenarios") or {}
+        value = scenario_values.get(spec.scenario)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
     field = spec.field
     if field == "auto":
         if aggregated_values:
@@ -155,13 +168,14 @@ def _quantize_entry_params_with_bounds(
 
 def _evaluate_limits(
     specs: Sequence[LimitSpec],
+    entry: Dict[str, Any],
     stats_flat: Dict[str, float],
     aggregated_values: Dict[str, float],
     objectives: Dict[str, float],
     metric_map: Dict[str, str],
 ) -> bool:
     for spec in specs:
-        value = _resolve_limit_value(spec, stats_flat, aggregated_values, objectives, metric_map)
+        value = _resolve_limit_value(spec, entry, stats_flat, aggregated_values, objectives, metric_map)
         if value is None:
             continue
         if not spec.op(value, spec.value):
@@ -626,6 +640,7 @@ def main():
                     objective_keys = all_objective_keys
             if limit_specs and not _evaluate_limits(
                 limit_specs,
+                entry,
                 stats_flat,
                 aggregated_values,
                 objectives,

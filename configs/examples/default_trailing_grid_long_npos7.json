@@ -5,7 +5,7 @@
             "default": "mean",
             "drawdown_worst_strategy_eq": "max",
             "drawdown_worst_mean_1pct_strategy_eq": "max",
-            "peak_recovery_days_strategy_eq": "mean",
+            "strategy_eq_recovery_days_max": "mean",
             "position_held_days_max": "max"
         },
         "balance_sample_divider": 60,
@@ -895,7 +895,7 @@
                 "enabled": false
             },
             {
-                "metric": "peak_recovery_days_strategy_eq",
+                "metric": "strategy_eq_recovery_days_max",
                 "penalize_if": "greater_than",
                 "value": 90,
                 "enabled": false
@@ -913,7 +913,7 @@
                 "enabled": false
             },
             {
-                "metric": "peak_recovery_days_strategy_eq",
+                "metric": "strategy_eq_recovery_days_max",
                 "penalize_if": "greater_than_or_equal",
                 "value": 71,
                 "enabled": false
@@ -972,7 +972,7 @@
                 "goal": "max"
             },
             {
-                "metric": "peak_recovery_days_strategy_eq",
+                "metric": "strategy_eq_recovery_days_max",
                 "goal": "min"
             },
             {
