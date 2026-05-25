@@ -10101,7 +10101,37 @@ class Passivbot:
         ineligible_reason = getattr(self, "ineligible_symbols", {}).get(symbol)
         if ineligible_reason is not None:
             return "tp_only" if ineligible_reason == "not active" else "manual"
+        side_block_mode = self._side_entry_block_mode(pside, symbol)
+        if side_block_mode is not None:
+            return side_block_mode
         return None
+
+    def _side_allows_new_entries(self, pside: str, symbol: str) -> bool:
+        """Return True only when new entries are allowed for this exact symbol side."""
+        runtime_forced = (
+            getattr(self, "_runtime_forced_modes", {}).get(pside, {}).get(symbol)
+        )
+        if runtime_forced:
+            return expand_PB_mode(runtime_forced) == "normal"
+        forced_mode = self.config_get(["live", f"forced_mode_{pside}"], symbol)
+        if forced_mode:
+            return expand_PB_mode(forced_mode) == "normal"
+        try:
+            return bool(self.is_approved(pside, symbol))
+        except Exception:
+            approved = getattr(self, "approved_coins_minus_ignored_coins", {}) or {}
+            ignored = getattr(self, "ignored_coins", {}) or {}
+            return symbol in set(approved.get(pside, set())) and symbol not in set(
+                ignored.get(pside, set())
+            )
+
+    def _side_entry_block_mode(self, pside: str, symbol: str) -> Optional[str]:
+        """Mode override used when a symbol is not approved for this exact side."""
+        if self._side_allows_new_entries(pside, symbol):
+            return None
+        if self.has_position(pside, symbol):
+            return "tp_only"
+        return "manual"
 
     def _build_orchestrator_mode_overrides(
         self, symbols: Iterable[str]
@@ -10240,6 +10270,7 @@ class Passivbot:
                     trailing = dict(trailing)
                 return {
                     "mode": mode,
+                    "allow_new_entries": self._side_allows_new_entries(pside, symbol),
                     "position": {
                         "size": float(pos["size"]),
                         "price": float(pos["price"]),
@@ -11220,6 +11251,7 @@ class Passivbot:
                     trailing = dict(trailing)
                 return {
                     "mode": mode,
+                    "allow_new_entries": self._side_allows_new_entries(pside, symbol),
                     "position": {
                         "size": float(pos["size"]),
                         "price": float(pos["price"]),

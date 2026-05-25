@@ -86,6 +86,12 @@ side-specific through suite, optimizer, backtest, and live entry eligibility.
 Dataset preparation may use a union of coins, but candidate evaluation must not
 widen one side's tradable universe with the other side's coins.
 
+Live order generation must carry side-specific entry eligibility into the Rust
+orchestrator. A symbol approved only for `short` may still have long closes if a
+legacy long position exists, but it must not generate new long entries unless a
+runtime or config forced normal mode explicitly overrides the block. Python
+order finalization keeps a final safety filter for unapproved non-reduce orders.
+
 ## Verification
 
 For each rebase package:

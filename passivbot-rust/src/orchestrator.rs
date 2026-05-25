@@ -302,6 +302,10 @@ mod core {
         true
     }
 
+    fn default_true() -> bool {
+        true
+    }
+
     fn default_max_realized_loss_pct() -> f64 {
         1.0
     }
@@ -316,6 +320,9 @@ mod core {
         /// `None` means “forager-eligible default”.
         /// `Some(Normal)` means “forced Normal” (always selected).
         pub mode: Option<TradingMode>,
+        /// True only when this symbol is approved for new entries on this exact side.
+        #[serde(default = "default_true")]
+        pub allow_new_entries: bool,
         pub position: Position,
         pub trailing: TrailingPriceBundle,
         /// Per-symbol/per-pside params after applying coin_overrides.
@@ -1153,6 +1160,7 @@ mod core {
         for s in symbols {
             if symbol_side_eligible(s, pside)
                 && symbol_side_input(s, pside).mode == Some(TradingMode::Normal)
+                && symbol_side_input(s, pside).allow_new_entries
             {
                 out.push(s.symbol_idx);
             }
@@ -1216,12 +1224,14 @@ mod core {
                 &side.bot_params,
             );
             let enabled = symbol_side_eligible(s, pside)
+                && side.allow_new_entries
                 && !already_active
                 && one_way_allows_initial_slot(symbols, s.symbol_idx, pside, hedge_mode)
                 && can_open_initial
                 && min_cost_ok;
             if !enabled {
                 if symbol_side_eligible(s, pside)
+                    && side.allow_new_entries
                     && !already_active
                     && one_way_allows_initial_slot(symbols, s.symbol_idx, pside, hedge_mode)
                     && can_open_initial
@@ -2013,9 +2023,11 @@ mod core {
                     // No position on either side - decide based on eligibility and EMA band distance
                     let long_enabled = enabled_long
                         && symbol_side_eligible(s, PositionSide::Long)
+                        && s.long.allow_new_entries
                         && should_generate_entries(effective_mode(s.long.mode, false), false, true);
                     let short_enabled = enabled_short
                         && symbol_side_eligible(s, PositionSide::Short)
+                        && s.short.allow_new_entries
                         && should_generate_entries(
                             effective_mode(s.short.mode, false),
                             false,
@@ -2104,6 +2116,7 @@ mod core {
                 let allow_initial = symbol_side_eligible(s, PositionSide::Long)
                     && actives_long[s.symbol_idx]
                     && !workspace.one_way_block_initial_long[s.symbol_idx]
+                    && s.long.allow_new_entries
                     && effective_min_cost_is_low_enough(
                         input.balance,
                         input.global.filter_by_min_effective_cost,
@@ -2125,7 +2138,8 @@ mod core {
                         closes.push(p);
                     }
                 } else {
-                    let wants_entries = should_generate_entries(mode, has_pos, allow_initial);
+                    let wants_entries = s.long.allow_new_entries
+                        && should_generate_entries(mode, has_pos, allow_initial);
                     let wants_closes = should_generate_closes(mode, has_pos);
                     if wants_entries || wants_closes {
                         let ema_bands =
@@ -2377,6 +2391,7 @@ mod core {
                 let allow_initial = symbol_side_eligible(s, PositionSide::Short)
                     && actives_short[s.symbol_idx]
                     && !workspace.one_way_block_initial_short[s.symbol_idx]
+                    && s.short.allow_new_entries
                     && effective_min_cost_is_low_enough(
                         input.balance,
                         input.global.filter_by_min_effective_cost,
@@ -2398,7 +2413,8 @@ mod core {
                         closes.push(p);
                     }
                 } else {
-                    let wants_entries = should_generate_entries(mode, has_pos, allow_initial);
+                    let wants_entries = s.short.allow_new_entries
+                        && should_generate_entries(mode, has_pos, allow_initial);
                     let wants_closes = should_generate_closes(mode, has_pos);
                     if wants_entries || wants_closes {
                         let ema_bands =
@@ -3179,12 +3195,14 @@ mod core {
                 emas,
                 long: SymbolSideInput {
                     mode: None,
+                    allow_new_entries: true,
                     position: Position::default(),
                     trailing: TrailingPriceBundle::default(),
                     bot_params: bp.clone(),
                 },
                 short: SymbolSideInput {
                     mode: None,
+                    allow_new_entries: true,
                     position: Position::default(),
                     trailing: TrailingPriceBundle::default(),
                     bot_params: bp,

@@ -138,6 +138,8 @@ def make_symbol(
     long_pos_price=0.0,
     short_pos_size=0.0,
     short_pos_price=0.0,
+    long_allow_new_entries=True,
+    short_allow_new_entries=True,
     long_bp=None,
     short_bp=None,
     emas=None,
@@ -161,12 +163,14 @@ def make_symbol(
         ),
         "long": {
             "mode": long_mode,
+            "allow_new_entries": long_allow_new_entries,
             "position": {"size": long_pos_size, "price": long_pos_price},
             "trailing": trailing_bundle(),
             "bot_params": bot_params(**(long_bp or {})),
         },
         "short": {
             "mode": short_mode,
+            "allow_new_entries": short_allow_new_entries,
             "position": {"size": short_pos_size, "price": short_pos_price},
             "trailing": trailing_bundle(),
             "bot_params": bot_params(
@@ -580,6 +584,40 @@ def test_orders_include_entries_and_closes():
     order_types = {o["order_type"] for o in out["orders"]}
     assert any(t.startswith("entry_") for t in order_types)
     assert any(t.startswith("close_") for t in order_types)
+
+
+def test_disallowed_side_new_entries_are_blocked_but_closes_remain_allowed():
+    import passivbot_rust as pbr
+
+    long_bp = {
+        "entry_initial_qty_pct": 0.1,
+        "entry_grid_spacing_pct": 0.01,
+        "close_grid_qty_pct": 1.0,
+        "close_grid_markup_start": 0.01,
+        "close_grid_markup_end": 0.01,
+        "n_positions": 1,
+        "total_wallet_exposure_limit": 1.0,
+        "wallet_exposure_limit": 1.0,
+    }
+    global_bp = bot_params_pair(long_overrides=long_bp)
+    sym = make_symbol(
+        0,
+        bid=100.0,
+        ask=100.0,
+        long_pos_size=1.0,
+        long_pos_price=100.0,
+        long_allow_new_entries=False,
+        long_bp=long_bp,
+    )
+    inp = make_input(balance=1_000.0, global_bp=global_bp, symbols=[sym])
+    out = compute(pbr, inp)
+
+    assert any(
+        o["pside"] == "long" and o["order_type"].startswith("close_") for o in out["orders"]
+    )
+    assert not any(
+        o["pside"] == "long" and o["order_type"].startswith("entry_") for o in out["orders"]
+    )
 
 
 def test_twel_entry_gating_blocks_new_entries():

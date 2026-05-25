@@ -1232,12 +1232,14 @@ impl<'a> Backtest<'a> {
                     emas,
                     long: orchestrator::SymbolSideInput {
                         mode: mode_long,
+                        allow_new_entries: true,
                         position: pos_long,
                         trailing: trailing_long,
                         bot_params: self.bot_params[idx].long.clone(),
                     },
                     short: orchestrator::SymbolSideInput {
                         mode: mode_short,
+                        allow_new_entries: true,
                         position: pos_short,
                         trailing: trailing_short,
                         bot_params: self.bot_params[idx].short.clone(),

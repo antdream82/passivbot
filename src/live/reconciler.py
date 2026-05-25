@@ -1048,6 +1048,25 @@ def to_executable_orders(
                     )
             if execution_type not in {"limit", "market"}:
                 execution_type = "limit"
+            reduce_only = "close" in order[2]
+            if not reduce_only and hasattr(bot, "_side_allows_new_entries"):
+                try:
+                    side_allowed = bot._side_allows_new_entries(position_side, symbol)
+                except Exception:
+                    side_allowed = True
+                if not side_allowed:
+                    if not hasattr(bot, "_blocked_unapproved_entry_orders_logged"):
+                        bot._blocked_unapproved_entry_orders_logged = set()
+                    key = (symbol, position_side, pb_order_type)
+                    if key not in bot._blocked_unapproved_entry_orders_logged:
+                        bot._blocked_unapproved_entry_orders_logged.add(key)
+                        logging.error(
+                            "[safety] blocked unapproved %s entry for %s | order_type=%s",
+                            position_side,
+                            symbol,
+                            pb_order_type,
+                        )
+                    continue
             ideal_orders_f[symbol].append(
                 {
                     "symbol": symbol,
@@ -1055,7 +1074,7 @@ def to_executable_orders(
                     "position_side": position_side,
                     "qty": abs(order[0]),
                     "price": order[1],
-                    "reduce_only": "close" in order[2],
+                    "reduce_only": reduce_only,
                     "custom_id": bot.format_custom_id_single(order[3]),
                     "type": execution_type,
                     "pb_order_type": pb_order_type,
