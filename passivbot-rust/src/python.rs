@@ -947,6 +947,16 @@ fn run_backtest_core<'py>(
         analysis_usd.entry_initial_balance_pct_short = entry_pct_short;
         analysis_btc.entry_initial_balance_pct_long = entry_pct_long;
         analysis_btc.entry_initial_balance_pct_short = entry_pct_short;
+        let (we_mean_long, we_max_long, we_mean_short, we_max_short) =
+            backtest.wallet_exposure_side_summary();
+        analysis_usd.wallet_exposure_mean_long = we_mean_long;
+        analysis_usd.wallet_exposure_max_long = we_max_long;
+        analysis_usd.wallet_exposure_mean_short = we_mean_short;
+        analysis_usd.wallet_exposure_max_short = we_max_short;
+        analysis_btc.wallet_exposure_mean_long = we_mean_long;
+        analysis_btc.wallet_exposure_max_long = we_max_long;
+        analysis_btc.wallet_exposure_mean_short = we_mean_short;
+        analysis_btc.wallet_exposure_max_short = we_max_short;
 
         let hs = backtest.hard_stop_metrics();
         let strategy = backtest.strategy_equity_metrics_for_analysis();

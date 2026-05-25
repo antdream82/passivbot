@@ -269,6 +269,28 @@ def test_expand_analysis_accepts_legacy_fill_payload_without_liquidity():
     assert result["gain_per_actual_exposure_usd"] == pytest.approx(4.0)
 
 
+def test_expand_analysis_uses_rust_side_exposure_summary_without_fills():
+    analysis_usd = _make_analysis_entry(2.0)
+    analysis_btc = _make_analysis_entry(1.0)
+    analysis_usd["total_wallet_exposure_mean"] = 0.5
+    analysis_btc["total_wallet_exposure_mean"] = 0.5
+    analysis_usd["wallet_exposure_mean_long"] = 0.25
+    analysis_usd["wallet_exposure_mean_short"] = 0.4
+    config = {
+        "bot": {
+            "long": {"total_wallet_exposure_limit": 1.0},
+            "short": {"total_wallet_exposure_limit": 1.0},
+        }
+    }
+
+    result = expand_analysis(analysis_usd, analysis_btc, fills=None, equities_array=None, config=config)
+
+    assert result["wallet_exposure_mean_long"] == pytest.approx(0.25)
+    assert result["wallet_exposure_mean_short"] == pytest.approx(0.4)
+    assert result["gain_per_actual_exposure_long_usd"] == pytest.approx(8.0)
+    assert result["gain_per_actual_exposure_short_usd"] == pytest.approx(5.0)
+
+
 def test_expand_analysis_includes_trade_level_metrics():
     analysis_usd = _make_analysis_entry(0.25)
     analysis_btc = _make_analysis_entry(0.75)
