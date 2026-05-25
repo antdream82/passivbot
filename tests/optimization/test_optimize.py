@@ -23,6 +23,7 @@ import optimize
 from optimize import (
     _apply_config_overrides,
     _analysis_indicates_liquidation,
+    _build_starting_seed_config,
     _clear_candidate_metrics,
     _looks_like_bool_token,
     _normalize_optional_bool_flag,
@@ -775,6 +776,35 @@ class TestConfigToIndividual:
         result = config_to_individual(config, bounds, sig_digits)
 
         assert result == pytest.approx([1.0, 60.0, 2.0, 3.0, 0.22, 4.0])
+
+    def test_build_starting_seed_config_discards_stale_optimize_bounds(self):
+        cfg = {
+            "bot": {
+                "long": {
+                    "n_positions": 1.0,
+                    "total_wallet_exposure_limit": 1.0,
+                    "entry_grid_spacing_pct": 0.01,
+                },
+                "short": {
+                    "n_positions": 0.0,
+                    "total_wallet_exposure_limit": 0.0,
+                    "entry_grid_spacing_pct": 0.02,
+                },
+            },
+            "optimize": {
+                "bounds": {
+                    "long_n_positions": [1.0, 1.0],
+                    "long_total_wallet_exposure_limit": [1.0, 1.0],
+                    "long_filter_volume_drop_pct": [0.0, 1.0],
+                }
+            },
+        }
+
+        seed = _build_starting_seed_config(cfg)
+
+        # Starting configs should seed values only; old optimize bounds must not
+        # override the current run's optimization key space.
+        assert seed["optimize"]["bounds"] == optimize.get_template_config()["optimize"]["bounds"]
 
 
 class TestValidateArray:

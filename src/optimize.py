@@ -1661,11 +1661,8 @@ def _build_starting_seed_config(cfg):
     seed["bot"] = deep_updated(seed["bot"], deepcopy(extracted["bot"]))
     if isinstance(extracted.get("live"), dict):
         seed["live"] = deep_updated(seed["live"], deepcopy(extracted["live"]))
-    optimize_cfg = extracted.get("optimize")
-    if isinstance(optimize_cfg, dict) and isinstance(optimize_cfg.get("bounds"), dict):
-        seed["optimize"]["bounds"] = deep_updated(
-            seed["optimize"]["bounds"], deepcopy(optimize_cfg["bounds"])
-        )
+    # Starting configs seed bot/live values only. Their optimize.bounds may come
+    # from an older run and must not override the active run's search space.
     return seed
 
 

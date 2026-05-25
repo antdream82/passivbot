@@ -858,30 +858,43 @@ def process_forager_fills(
     equities_array,
     balance_sample_divider: int = 60,
 ):
-    fdf = pd.DataFrame(
-        fills,
-        columns=[
-            "index",
-            "timestamp",
-            "coin",
-            "pnl",
-            "fee_paid",
-            "usd_total_balance",
-            "btc_cash_wallet",
-            "usd_cash_wallet",
-            "btc_price",
-            "qty",
-            "price",
-            "psize",
-            "pprice",
-            "type",
-            "liquidity",
-            "wallet_exposure",
-            "twe_long",
-            "twe_short",
-            "twe_net",
-        ],
-    )
+    fill_columns = [
+        "index",
+        "timestamp",
+        "coin",
+        "pnl",
+        "fee_paid",
+        "usd_total_balance",
+        "btc_cash_wallet",
+        "usd_cash_wallet",
+        "btc_price",
+        "qty",
+        "price",
+        "psize",
+        "pprice",
+        "type",
+        "liquidity",
+        "wallet_exposure",
+        "twe_long",
+        "twe_short",
+        "twe_net",
+    ]
+    legacy_fill_columns = [col for col in fill_columns if col != "liquidity"]
+    fills_array = np.asarray([] if fills is None else fills)
+    if fills_array.size == 0:
+        fdf = pd.DataFrame(columns=fill_columns)
+    else:
+        fills_width = fills_array.shape[1] if fills_array.ndim > 1 else len(fill_columns)
+        if fills_width == len(fill_columns):
+            fdf = pd.DataFrame(fills, columns=fill_columns)
+        elif fills_width == len(legacy_fill_columns):
+            fdf = pd.DataFrame(fills, columns=legacy_fill_columns)
+            fdf["liquidity"] = ""
+            fdf = fdf[fill_columns]
+        else:
+            raise ValueError(
+                f"Unexpected fills width {fills_width}; expected {len(fill_columns)} or {len(legacy_fill_columns)}"
+            )
     if not fdf.empty:
         fdf["timestamp"] = pd.to_datetime(fdf["timestamp"].astype(np.int64), unit="ms")
         fdf["index"] = fdf["index"].astype(int)
@@ -1865,12 +1878,23 @@ def expand_analysis(analysis_usd, analysis_btc, fills, equities_array, config):
         "twe_short",
         "twe_net",
     ]
+    legacy_fill_columns = [col for col in fill_columns if col != "liquidity"]
     fills_array = np.asarray(fills)
     if fills_array.size == 0:
         fills_df = pd.DataFrame(columns=fill_columns)
     else:
-        fills_df = pd.DataFrame(fills, columns=fill_columns)
-    total_steps = int(len(equities_array))
+        fills_width = fills_array.shape[1] if fills_array.ndim > 1 else len(fill_columns)
+        if fills_width == len(fill_columns):
+            fills_df = pd.DataFrame(fills, columns=fill_columns)
+        elif fills_width == len(legacy_fill_columns):
+            fills_df = pd.DataFrame(fills, columns=legacy_fill_columns)
+            fills_df["liquidity"] = ""
+            fills_df = fills_df[fill_columns]
+        else:
+            raise ValueError(
+                f"Unexpected fills width {fills_width}; expected {len(fill_columns)} or {len(legacy_fill_columns)}"
+            )
+    total_steps = int(len(equities_array)) if equities_array is not None else 0
     actual_exposure_means = {"long": 0.0, "short": 0.0}
     if total_steps > 0:
         if fills_df.empty:
